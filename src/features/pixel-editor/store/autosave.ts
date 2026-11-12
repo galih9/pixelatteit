@@ -1,5 +1,5 @@
 import { writeAutosave } from "../lib/persistence";
-import { useEditorStore, visiblePixels } from "./editorStore";
+import { documentLayers, useEditorStore } from "./editorStore";
 
 /** Saves the document to localStorage shortly after every change. */
 export function startAutosave(): () => void {
@@ -8,6 +8,8 @@ export function startAutosave(): () => void {
 		const changed =
 			state.pixels !== previous.pixels ||
 			state.floating !== previous.floating ||
+			state.layers !== previous.layers ||
+			state.activeLayer !== previous.activeLayer ||
 			state.palette !== previous.palette ||
 			state.name !== previous.name ||
 			state.primaryColor !== previous.primaryColor ||
@@ -20,7 +22,8 @@ export function startAutosave(): () => void {
 				name: current.name,
 				width: current.width,
 				height: current.height,
-				pixels: visiblePixels(current),
+				layers: documentLayers(current),
+				activeLayer: current.activeLayer,
 				palette: current.palette,
 				primaryColor: current.primaryColor,
 				secondaryColor: current.secondaryColor,

@@ -74,11 +74,13 @@ export function useShortcuts(): void {
 					return;
 				}
 				case "Escape": {
-					state.deselect();
+					if (state.textDraft) state.cancelText();
+					else state.deselect();
 					return;
 				}
 				case "Enter": {
-					state.anchorFloating();
+					if (state.textDraft) state.commitText();
+					else state.anchorFloating();
 					return;
 				}
 				case "+":
@@ -113,6 +115,14 @@ export function useShortcuts(): void {
 				}
 			}
 
+			if (event.shiftKey && key === "n") {
+				state.addLayer();
+				return;
+			}
+			if (event.shiftKey && key === "o") {
+				state.openDialog("outline");
+				return;
+			}
 			if (key === "x") {
 				state.swapColors();
 				return;

@@ -17,8 +17,10 @@ import {
 	packedToHex,
 	TRANSPARENT,
 } from "../lib/color";
+import { createBlurSampler } from "../lib/filters";
 import { publishFrame } from "../lib/liveView";
 import {
+	brushOffsets,
 	brushOrigin,
 	constrainLine,
 	constrainSquare,
@@ -35,10 +37,13 @@ import {
 	stamp,
 	type PaintTarget,
 } from "../lib/raster";
+import { renderText } from "../lib/text";
 import {
+	compositeView,
 	type EditorState,
 	useEditorStore,
 	visiblePixels,
+	withTextPreview,
 } from "../store/editorStore";
 import type { BrushShape, PixelBuffer, Point, SelectionMode } from "../types";
 
@@ -83,7 +88,27 @@ type Interaction =
 			panX: number;
 			panY: number;
 	  }
-	| { kind: "pick"; primary: boolean };
+	| { kind: "pick"; primary: boolean }
+	| {
+			kind: "blur";
+			target: PaintTarget;
+			touched: Uint8Array;
+			sample: (x: number, y: number) => number;
+			last: Point;
+			size: number;
+			shape: BrushShape;
+	  }
+	| {
+			kind: "contour";
+			color: number;
+			base: PixelBuffer;
+			target: PaintTarget;
+			path: Array<Point>;
+			last: Point;
+			size: number;
+			shape: BrushShape;
+	  }
+	| { kind: "text-move"; start: Point; originX: number; originY: number };
 
 type Preview =
 	| { kind: "rect"; x: number; y: number; width: number; height: number }
@@ -178,6 +203,60 @@ function drawShape(
 	}
 }
 
+function blurAt(
+	interaction: Extract<Interaction, { kind: "blur" }>,
+	point: Point
+): void {
+	const { target, touched } = interaction;
+	for (const offset of brushOffsets(interaction.size, interaction.shape)) {
+		const x = point.x + offset.x;
+		const y = point.y + offset.y;
+		if (x < 0 || y < 0 || x >= target.width || y >= target.height) continue;
+		const index = y * target.width + x;
+		if (touched[index] === 1) continue;
+		if (target.mask && target.mask[index] !== 1) continue;
+		// Each pixel is blurred once per stroke, from the original pixels,
+		// so a stroke is predictable: drag again to blur more.
+		touched[index] = 1;
+		target.data[index] = interaction.sample(x, y);
+	}
+}
+
+function drawContour(
+	interaction: Extract<Interaction, { kind: "contour" }>
+): void {
+	const { target, path, color } = interaction;
+	target.data.set(interaction.base);
+	if (path.length >= 3) {
+		const area = polygonMask(
+			target.width,
+			target.height,
+			path.map((point) => ({ x: point.x + 0.5, y: point.y + 0.5 }))
+		);
+		for (let index = 0; index < area.length; index++) {
+			if (area[index] !== 1) continue;
+			plot(
+				target,
+				index % target.width,
+				Math.floor(index / target.width),
+				color
+			);
+		}
+	}
+	for (const point of path) {
+		stamp(target, point.x, point.y, interaction.size, interaction.shape, color);
+	}
+}
+
+/** Size of the text box being placed (a caret-sized box when empty). */
+function textBox(state: Pick<EditorState, "textValue" | "textStyle">): {
+	width: number;
+	height: number;
+} {
+	const bitmap = renderText(state.textValue || " ", state.textStyle);
+	return { width: Math.max(1, bitmap.width), height: bitmap.height };
+}
+
 export const PixelCanvas = (): FunctionComponent => {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const imageLayerRef = useRef<Konva.Layer>(null);
@@ -202,6 +281,9 @@ export const PixelCanvas = (): FunctionComponent => {
 	const floating = useEditorStore((state) => state.floating);
 	const symmetryX = useEditorStore((state) => state.symmetryX);
 	const symmetryY = useEditorStore((state) => state.symmetryY);
+	const textDraft = useEditorStore((state) => state.textDraft);
+	const textValue = useEditorStore((state) => state.textValue);
+	const textStyle = useEditorStore((state) => state.textStyle);
 
 	/* --------------------------- pixel rendering -------------------------- */
 
@@ -226,23 +308,34 @@ export const PixelCanvas = (): FunctionComponent => {
 			publishFrame(bufferCanvas);
 		};
 		const drawState = (state: EditorState): void => {
-			draw(visiblePixels(state), state.width, state.height);
+			const active = withTextPreview(state, visiblePixels(state));
+			draw(compositeView(state, active), state.width, state.height);
 		};
 		drawState(getState());
 		// Strokes in progress call `draw` directly through this event.
 		const onLiveDraw = (event: Event): void => {
 			const detail = (event as CustomEvent<PixelBuffer>).detail;
 			const state = getState();
-			draw(detail, state.width, state.height);
+			draw(compositeView(state, detail), state.width, state.height);
 		};
 		const container = containerRef.current;
 		container?.addEventListener("pixel-live-draw", onLiveDraw);
 		const unsubscribe = useEditorStore.subscribe((state, previous) => {
+			const textChanged =
+				state.textDraft !== previous.textDraft ||
+				(state.textDraft !== null &&
+					(state.textValue !== previous.textValue ||
+						state.textStyle !== previous.textStyle ||
+						state.primaryColor !== previous.primaryColor ||
+						state.selection !== previous.selection));
 			if (
 				state.pixels !== previous.pixels ||
 				state.floating !== previous.floating ||
+				state.layers !== previous.layers ||
+				state.activeLayer !== previous.activeLayer ||
 				state.width !== previous.width ||
-				state.height !== previous.height
+				state.height !== previous.height ||
+				textChanged
 			) {
 				drawState(state);
 			}
@@ -365,8 +458,9 @@ export const PixelCanvas = (): FunctionComponent => {
 				pixel.y >= state.height
 			)
 				return;
+			// Samples what you see (all visible layers), like most editors.
 			const value =
-				visiblePixels(state)[pixel.y * state.width + pixel.x] ?? TRANSPARENT;
+				compositeView(state)[pixel.y * state.width + pixel.x] ?? TRANSPARENT;
 			if (packedAlpha(value) === 0) return;
 			const hex = packedToHex(value);
 			if (primary) state.setPrimaryColor(hex);
@@ -430,6 +524,11 @@ export const PixelCanvas = (): FunctionComponent => {
 				state.showNotice(
 					"Drawing is limited to the selection · press Esc to deselect"
 				);
+			} else if (
+				(drawsPixels || activeTool === "text") &&
+				state.layers[state.activeLayer]?.visible === false
+			) {
+				state.showNotice("This layer is hidden · show it to see your changes");
 			}
 			const color =
 				activeTool === "eraser" ? TRANSPARENT : hexToPacked(colorHex);
@@ -564,6 +663,75 @@ export const PixelCanvas = (): FunctionComponent => {
 					};
 					break;
 				}
+				case "blur": {
+					const blur: Extract<Interaction, { kind: "blur" }> = {
+						kind: "blur",
+						target: makeTarget(state),
+						touched: new Uint8Array(state.width * state.height),
+						sample: createBlurSampler(state.pixels, state.width, state.height, {
+							radius: state.blurRadius,
+							strength: state.blurStrength,
+							preserveAlpha: state.blurPreserveAlpha,
+							palette: state.blurSnapPalette
+								? state.palette.map((hex) => hexToPacked(hex))
+								: null,
+						}),
+						last: pixel,
+						size: state.brushSize,
+						shape: state.brushShape,
+					};
+					blurAt(blur, pixel);
+					interaction = blur;
+					liveDraw(blur.target.data);
+					break;
+				}
+				case "contour": {
+					const contour: Extract<Interaction, { kind: "contour" }> = {
+						kind: "contour",
+						color,
+						base: state.pixels,
+						target: makeTarget(state),
+						path: [pixel],
+						last: pixel,
+						size: state.brushSize,
+						shape: state.brushShape,
+					};
+					drawContour(contour);
+					interaction = contour;
+					liveDraw(contour.target.data);
+					break;
+				}
+				case "text": {
+					// Keep focus in the text box in the options bar.
+					event.preventDefault();
+					const draft = state.textDraft;
+					if (draft) {
+						const box = textBox(state);
+						const insideBox =
+							pixel.x >= draft.x - 1 &&
+							pixel.y >= draft.y - 1 &&
+							pixel.x <= draft.x + box.width &&
+							pixel.y <= draft.y + box.height;
+						if (insideBox) {
+							interaction = {
+								kind: "text-move",
+								start: point,
+								originX: draft.x,
+								originY: draft.y,
+							};
+							break;
+						}
+						state.commitText();
+					}
+					getState().placeText(pixel);
+					interaction = {
+						kind: "text-move",
+						start: point,
+						originX: pixel.x,
+						originY: pixel.y,
+					};
+					break;
+				}
 				case "hand": {
 					break;
 				}
@@ -605,6 +773,39 @@ export const PixelCanvas = (): FunctionComponent => {
 				}
 				case "pick": {
 					pick(pixel, interaction.primary);
+					break;
+				}
+				case "blur": {
+					const { last } = interaction;
+					if (last.x === pixel.x && last.y === pixel.y) return;
+					for (const linePoint of linePoints(
+						last.x,
+						last.y,
+						pixel.x,
+						pixel.y
+					)) {
+						blurAt(interaction, linePoint);
+					}
+					interaction.last = pixel;
+					liveDraw(interaction.target.data);
+					break;
+				}
+				case "contour": {
+					const { last } = interaction;
+					if (last.x === pixel.x && last.y === pixel.y) return;
+					interaction.path.push(
+						...linePoints(last.x, last.y, pixel.x, pixel.y).slice(1)
+					);
+					interaction.last = pixel;
+					drawContour(interaction);
+					liveDraw(interaction.target.data);
+					break;
+				}
+				case "text-move": {
+					state.placeText({
+						x: interaction.originX + Math.round(point.x - interaction.start.x),
+						y: interaction.originY + Math.round(point.y - interaction.start.y),
+					});
 					break;
 				}
 				case "select-rect": {
@@ -678,6 +879,11 @@ export const PixelCanvas = (): FunctionComponent => {
 					state.commitPixels(current.target.data);
 					break;
 				}
+				case "blur":
+				case "contour": {
+					state.commitPixels(current.target.data);
+					break;
+				}
 				case "select-rect": {
 					setPreview(null);
 					if (!current.moved) {
@@ -706,7 +912,8 @@ export const PixelCanvas = (): FunctionComponent => {
 					break;
 				}
 				case "move":
-				case "pick": {
+				case "pick":
+				case "text-move": {
 					break;
 				}
 			}
@@ -763,13 +970,23 @@ export const PixelCanvas = (): FunctionComponent => {
 
 	const footprint = PAINT_TOOLS.has(tool) ? brushSize : 1;
 	const showFootprint =
-		hover !== null && tool !== "hand" && tool !== "move" && !spaceHeld;
+		hover !== null &&
+		tool !== "hand" &&
+		tool !== "move" &&
+		tool !== "text" &&
+		!spaceHeld;
+	const box = useMemo(
+		() =>
+			textDraft ? textBox({ textValue, textStyle }) : { width: 0, height: 0 },
+		[textDraft, textValue, textStyle]
+	);
 	const cell = checkerCell(zoom);
 
 	let cursor = "crosshair";
 	if (isPanning) cursor = "grabbing";
 	else if (spaceHeld || tool === "hand") cursor = "grab";
 	else if (tool === "move") cursor = "move";
+	else if (tool === "text") cursor = "text";
 
 	return (
 		<div
@@ -918,6 +1135,29 @@ export const PixelCanvas = (): FunctionComponent => {
 								strokeScaleEnabled={false}
 								strokeWidth={1}
 							/>
+						)}
+						{textDraft && (
+							<>
+								<Rect
+									height={box.height + 2}
+									stroke="#000000"
+									strokeScaleEnabled={false}
+									strokeWidth={1}
+									width={box.width + 2}
+									x={textDraft.x - 1}
+									y={textDraft.y - 1}
+								/>
+								<Rect
+									dash={[3, 3]}
+									height={box.height + 2}
+									stroke="#38bdf8"
+									strokeScaleEnabled={false}
+									strokeWidth={1}
+									width={box.width + 2}
+									x={textDraft.x - 1}
+									y={textDraft.y - 1}
+								/>
+							</>
 						)}
 						{showFootprint && (
 							<>

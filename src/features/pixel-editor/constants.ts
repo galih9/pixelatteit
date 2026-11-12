@@ -50,6 +50,9 @@ export const TOOLS: Array<ToolInfo> = [
 	{ id: "select-rect", label: "Rectangle select", shortcut: "M" },
 	{ id: "lasso", label: "Lasso select", shortcut: "Q" },
 	{ id: "wand", label: "Magic wand", shortcut: "W" },
+	{ id: "contour", label: "Contour (filled freehand)", shortcut: "D" },
+	{ id: "blur", label: "Blur brush", shortcut: "R" },
+	{ id: "text", label: "Text", shortcut: "T" },
 	{ id: "move", label: "Move", shortcut: "V" },
 	{ id: "hand", label: "Hand (pan)", shortcut: "H" },
 ];
@@ -60,4 +63,8 @@ export const PAINT_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
 	"line",
 	"rectangle",
 	"ellipse",
+	"contour",
+	"blur",
 ]);
+
+export const MAX_LAYERS = 32;

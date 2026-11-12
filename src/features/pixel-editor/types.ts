@@ -10,7 +10,10 @@ export type Tool =
 	| "lasso"
 	| "wand"
 	| "move"
-	| "hand";
+	| "hand"
+	| "text"
+	| "blur"
+	| "contour";
 
 export type BrushShape = "square" | "circle";
 
@@ -35,11 +38,29 @@ export type Floating = {
 	temporary: boolean;
 };
 
+/**
+ * One layer of the document. Layers are stored bottom → top.
+ *
+ * Note: for the *active* layer the live pixels are kept in
+ * `EditorState.pixels`, so `layers[activeLayer].pixels` can be stale.
+ * Use `syncedLayers()` from the store when you need every layer's pixels.
+ */
+export type Layer = {
+	id: number;
+	name: string;
+	visible: boolean;
+	/** 0–100 */
+	opacity: number;
+	pixels: PixelBuffer;
+};
+
 export type Snapshot = {
 	width: number;
 	height: number;
 	pixels: PixelBuffer;
 	selection: SelectionMask | null;
+	layers: Array<Layer>;
+	activeLayer: number;
 };
 
 export type Clip = {
@@ -51,8 +72,26 @@ export type Clip = {
 	mask: SelectionMask;
 };
 
-export type DialogKind = "new" | "export" | "help";
+export type DialogKind = "new" | "export" | "help" | "outline";
 
 export type ResizeAnchor = "center" | "top-left";
 
 export type Notice = { id: number; message: string };
+
+export type TextFont =
+	| "pixel-3x5"
+	| "pixel-5x7"
+	| "sans-serif"
+	| "serif"
+	| "monospace";
+
+export type TextStyle = {
+	font: TextFont;
+	/** Integer scale for pixel fonts. */
+	scale: number;
+	/** Pixel height for system fonts. */
+	size: number;
+	bold: boolean;
+	/** Extra pixels between letters. */
+	spacing: number;
+};

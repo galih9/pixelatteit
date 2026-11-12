@@ -4,6 +4,7 @@ import { EXPORT_SCALES, MAX_CANVAS_SIZE, SIZE_PRESETS } from "../constants";
 import { exportPng } from "../lib/files";
 import { useEditorStore } from "../store/editorStore";
 import type { ResizeAnchor } from "../types";
+import { OutlineDialog } from "./OutlineDialog";
 import { Modal, TextButton } from "./ui";
 
 const clampInput = (value: string): number =>
@@ -179,7 +180,11 @@ const SHORTCUTS: Array<[string, string]> = [
 	["B / E / G / I", "Pencil / Eraser / Fill / Eyedropper"],
 	["L / U / O", "Line / Rectangle / Ellipse"],
 	["M / Q / W", "Rect select / Lasso / Magic wand"],
+	["D / R / T", "Contour / Blur brush / Text"],
 	["V / H", "Move / Hand"],
+	["Shift+N", "New layer"],
+	["Shift+O", "Auto outline…"],
+	["Enter / Esc (text)", "Apply / cancel text"],
 	["Space + drag, middle drag", "Pan"],
 	["Mouse wheel, + / -", "Zoom"],
 	["0", "Fit to screen"],
@@ -190,7 +195,7 @@ const SHORTCUTS: Array<[string, string]> = [
 	["Ctrl+Z / Ctrl+Y", "Undo / Redo"],
 	["Ctrl+A / Ctrl+D / Esc", "Select all / Deselect"],
 	["Ctrl+C / X / V", "Copy / Cut / Paste"],
-	["Delete", "Clear selection"],
+	["Delete", "Clear selection (on the active layer)"],
 	["Arrows (Shift = 8px)", "Nudge selection"],
 	["Enter", "Apply moved selection"],
 	["#", "Toggle grid"],
@@ -227,5 +232,6 @@ export const Dialogs = (): FunctionComponent => {
 	if (dialog === "new") return <NewCanvasDialog onClose={close} />;
 	if (dialog === "export") return <ExportDialog onClose={close} />;
 	if (dialog === "help") return <HelpDialog onClose={close} />;
+	if (dialog === "outline") return <OutlineDialog onClose={close} />;
 	return null;
 };

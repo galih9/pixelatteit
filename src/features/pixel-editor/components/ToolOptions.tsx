@@ -1,6 +1,9 @@
+import { useEffect, useRef } from "react";
 import type { FunctionComponent } from "../../../common/types";
 import { MAX_BRUSH_SIZE, TOOLS } from "../constants";
+import { isPixelFont, TEXT_FONTS } from "../lib/text";
 import { useEditorStore } from "../store/editorStore";
+import type { TextFont } from "../types";
 import { Divider, TextButton, Toggle } from "./ui";
 
 const BrushOptions = ({
@@ -107,8 +110,220 @@ const SelectionActions = (): FunctionComponent => {
 };
 
 const Hint = ({ children }: { children: string }): FunctionComponent => (
-	<span className="text-xs text-zinc-500">{children}</span>
+	<span className="shrink-0 text-xs text-zinc-500">{children}</span>
 );
+
+const NumberSlider = ({
+	label,
+	value,
+	min,
+	max,
+	suffix = "",
+	width = "w-24",
+	onChange,
+}: {
+	label: string;
+	value: number;
+	min: number;
+	max: number;
+	suffix?: string;
+	width?: string;
+	onChange: (value: number) => void;
+}): FunctionComponent => (
+	<label className="flex shrink-0 items-center gap-2 text-xs text-zinc-400">
+		{label}
+		<input
+			className={`${width} accent-sky-500`}
+			max={max}
+			min={min}
+			type="range"
+			value={value}
+			onChange={(event) => {
+				onChange(Number(event.target.value));
+			}}
+		/>
+		<span className="w-9 tabular-nums text-zinc-200">
+			{value}
+			{suffix}
+		</span>
+	</label>
+);
+
+const BlurOptions = (): FunctionComponent => {
+	const strength = useEditorStore((state) => state.blurStrength);
+	const setStrength = useEditorStore((state) => state.setBlurStrength);
+	const radius = useEditorStore((state) => state.blurRadius);
+	const setRadius = useEditorStore((state) => state.setBlurRadius);
+	const preserveAlpha = useEditorStore((state) => state.blurPreserveAlpha);
+	const togglePreserveAlpha = useEditorStore(
+		(state) => state.toggleBlurPreserveAlpha
+	);
+	const snapPalette = useEditorStore((state) => state.blurSnapPalette);
+	const toggleSnapPalette = useEditorStore(
+		(state) => state.toggleBlurSnapPalette
+	);
+	const blurLayer = useEditorStore((state) => state.blurLayer);
+	const hasSelection = useEditorStore((state) => state.selection !== null);
+	return (
+		<>
+			<Divider />
+			<NumberSlider
+				label="Strength"
+				max={100}
+				min={5}
+				suffix="%"
+				value={strength}
+				onChange={setStrength}
+			/>
+			<NumberSlider
+				label="Radius"
+				max={3}
+				min={1}
+				suffix="px"
+				value={radius}
+				width="w-14"
+				onChange={setRadius}
+			/>
+			<Toggle
+				checked={preserveAlpha}
+				label="Keep transparency"
+				onChange={togglePreserveAlpha}
+			/>
+			<Toggle
+				checked={snapPalette}
+				label="Snap to palette"
+				onChange={toggleSnapPalette}
+			/>
+			<Divider />
+			<TextButton
+				title="Blur the whole active layer (or the selection) once"
+				onClick={blurLayer}
+			>
+				{hasSelection ? "Blur selection" : "Blur layer"}
+			</TextButton>
+		</>
+	);
+};
+
+const TextOptions = (): FunctionComponent => {
+	const inputRef = useRef<HTMLInputElement>(null);
+	const textValue = useEditorStore((state) => state.textValue);
+	const setTextValue = useEditorStore((state) => state.setTextValue);
+	const style = useEditorStore((state) => state.textStyle);
+	const setStyle = useEditorStore((state) => state.setTextStyle);
+	const draft = useEditorStore((state) => state.textDraft);
+	const commitText = useEditorStore((state) => state.commitText);
+	const cancelText = useEditorStore((state) => state.cancelText);
+	const pixelFont = isPixelFont(style.font);
+
+	const placed = draft !== null;
+	useEffect(() => {
+		if (!placed) return;
+		const frame = window.requestAnimationFrame(() => {
+			inputRef.current?.focus();
+		});
+		return (): void => {
+			window.cancelAnimationFrame(frame);
+		};
+	}, [placed, draft]);
+
+	return (
+		<>
+			<input
+				ref={inputRef}
+				aria-label="Text"
+				className="h-7 w-44 shrink-0 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-sky-500"
+				placeholder={placed ? "Type your text…" : "Click the canvas first"}
+				value={textValue}
+				onChange={(event) => {
+					setTextValue(event.target.value);
+				}}
+				onKeyDown={(event) => {
+					if (event.key === "Enter") {
+						event.preventDefault();
+						commitText();
+					}
+					if (event.key === "Escape") {
+						event.preventDefault();
+						cancelText();
+						inputRef.current?.blur();
+					}
+				}}
+			/>
+			<select
+				aria-label="Font"
+				className="h-7 shrink-0 rounded-md border border-zinc-700 bg-zinc-800 px-1.5 text-xs text-zinc-100"
+				value={style.font}
+				onChange={(event) => {
+					setStyle({ font: event.target.value as TextFont });
+				}}
+			>
+				{TEXT_FONTS.map((font) => (
+					<option key={font.id} value={font.id}>
+						{font.label}
+					</option>
+				))}
+			</select>
+			{pixelFont ? (
+				<NumberSlider
+					label="Scale"
+					max={4}
+					min={1}
+					suffix="×"
+					value={style.scale}
+					width="w-16"
+					onChange={(scale) => {
+						setStyle({ scale });
+					}}
+				/>
+			) : (
+				<>
+					<NumberSlider
+						label="Size"
+						max={48}
+						min={6}
+						suffix="px"
+						value={style.size}
+						onChange={(size) => {
+							setStyle({ size });
+						}}
+					/>
+					<Toggle
+						checked={style.bold}
+						label="Bold"
+						onChange={() => {
+							setStyle({ bold: !style.bold });
+						}}
+					/>
+				</>
+			)}
+			<NumberSlider
+				label="Spacing"
+				max={4}
+				min={0}
+				suffix="px"
+				value={style.spacing}
+				width="w-14"
+				onChange={(spacing) => {
+					setStyle({ spacing });
+				}}
+			/>
+			<Divider />
+			<TextButton
+				disabled={!placed || textValue === ""}
+				title="Enter"
+				variant="primary"
+				onClick={commitText}
+			>
+				Apply
+			</TextButton>
+			<TextButton disabled={!placed} title="Esc" onClick={cancelText}>
+				Cancel
+			</TextButton>
+			<Hint>Uses the left color · drag the box to move it</Hint>
+		</>
+	);
+};
 
 export const ToolOptions = (): FunctionComponent => {
 	const tool = useEditorStore((state) => state.tool);
@@ -155,6 +370,30 @@ export const ToolOptions = (): FunctionComponent => {
 					</Hint>
 				</>
 			);
+			break;
+		}
+		case "contour": {
+			content = (
+				<>
+					<BrushOptions showPixelPerfect={false} />
+					<SymmetryOptions />
+					<Hint>Draw around a shape · it fills when you let go</Hint>
+				</>
+			);
+			break;
+		}
+		case "blur": {
+			content = (
+				<>
+					<BrushOptions showPixelPerfect={false} />
+					<BlurOptions />
+					<Hint>Each stroke blurs once · stroke again for more</Hint>
+				</>
+			);
+			break;
+		}
+		case "text": {
+			content = <TextOptions />;
 			break;
 		}
 		case "fill": {

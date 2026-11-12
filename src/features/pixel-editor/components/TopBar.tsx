@@ -11,6 +11,7 @@ import {
 	MagnifyingGlassPlusIcon,
 	PhotoIcon,
 	QuestionMarkCircleIcon,
+	SparklesIcon,
 	Squares2X2Icon,
 } from "@heroicons/react/20/solid";
 import type { FunctionComponent } from "../../../common/types";
@@ -130,6 +131,15 @@ export const TopBar = (): FunctionComponent => {
 				}}
 			>
 				<ArrowsUpDownIcon className={svgClass} />
+			</IconButton>
+			<IconButton
+				className={iconClass}
+				label="Auto outline… (Shift+O)"
+				onClick={() => {
+					openDialog("outline");
+				}}
+			>
+				<SparklesIcon className={svgClass} />
 			</IconButton>
 			<IconButton
 				active={showGrid}

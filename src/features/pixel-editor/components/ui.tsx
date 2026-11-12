@@ -58,7 +58,7 @@ export const TextButton = ({
 	if (active) style = "bg-sky-500/90 text-white border-sky-400";
 	return (
 		<button
-			className={`h-7 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:opacity-40 ${style}`}
+			className={`h-7 shrink-0 whitespace-nowrap rounded-md border px-2.5 text-xs font-medium transition-colors disabled:opacity-40 ${style}`}
 			disabled={disabled}
 			title={title}
 			type="button"
@@ -76,7 +76,7 @@ export const Toggle = ({
 	checked,
 	onChange,
 }: ToggleProps): FunctionComponent => (
-	<label className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
+	<label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-zinc-300">
 		<input
 			checked={checked}
 			className="h-3.5 w-3.5 accent-sky-500"
@@ -89,6 +89,7 @@ export const Toggle = ({
 
 type ModalProps = {
 	title: string;
+	wide?: boolean;
 	children: ReactNode;
 	footer: ReactNode;
 	onClose: () => void;
@@ -96,6 +97,7 @@ type ModalProps = {
 
 export const Modal = ({
 	title,
+	wide = false,
 	children,
 	footer,
 	onClose,
@@ -115,8 +117,10 @@ export const Modal = ({
 			<div
 				aria-label={title}
 				aria-modal="true"
-				className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"
 				role="dialog"
+				className={`w-full rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl ${
+					wide ? "max-w-2xl" : "max-w-md"
+				}`}
 			>
 				<div className="border-b border-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-100">
 					{title}

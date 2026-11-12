@@ -1,6 +1,10 @@
 import { saveAs } from "file-saver";
 import { MAX_CANVAS_SIZE } from "../constants";
-import { useEditorStore, visiblePixels } from "../store/editorStore";
+import {
+	documentLayers,
+	flattenedPixels,
+	useEditorStore,
+} from "../store/editorStore";
 import type { PixelBuffer } from "../types";
 import { packedToHex } from "./color";
 import { parseDocument, serializeDocument } from "./persistence";
@@ -55,7 +59,7 @@ function pixelsToCanvas(
 export function exportPng(scale: number, fileName?: string): void {
 	const state = useEditorStore.getState();
 	const canvas = pixelsToCanvas(
-		visiblePixels(state),
+		flattenedPixels(state),
 		state.width,
 		state.height,
 		scale
@@ -73,7 +77,8 @@ export function saveProject(): void {
 		name: state.name,
 		width: state.width,
 		height: state.height,
-		pixels: visiblePixels(state),
+		layers: documentLayers(state),
+		activeLayer: state.activeLayer,
 		palette: state.palette,
 		primaryColor: state.primaryColor,
 		secondaryColor: state.secondaryColor,
@@ -139,7 +144,9 @@ export async function openFile(): Promise<void> {
 
 export function paletteFromCanvas(): void {
 	const state = useEditorStore.getState();
-	const colors = uniqueOpaqueColors(visiblePixels(state), 256).map(packedToHex);
+	const colors = uniqueOpaqueColors(flattenedPixels(state), 256).map(
+		packedToHex
+	);
 	if (colors.length === 0) {
 		state.showNotice("The canvas has no colors yet.");
 		return;

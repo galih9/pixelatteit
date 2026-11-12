@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { FunctionComponent } from "../../common/types";
 import { ColorPanel } from "./components/ColorPanel";
 import { Dialogs } from "./components/Dialogs";
+import { LayersPanel } from "./components/LayersPanel";
 import { PixelCanvas } from "./components/PixelCanvas";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { StatusBar } from "./components/StatusBar";
@@ -27,6 +28,7 @@ export const PixelEditor = (): FunctionComponent => {
 				</main>
 				<aside className="w-64 shrink-0 overflow-y-auto border-l border-zinc-800 bg-zinc-900">
 					<ColorPanel />
+					<LayersPanel />
 					<PreviewPanel />
 				</aside>
 			</div>
