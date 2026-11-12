@@ -1,0 +1,135 @@
+import { type ReactNode, useEffect } from "react";
+import type { FunctionComponent } from "../../../common/types";
+
+type IconButtonProps = {
+	label: string;
+	active?: boolean;
+	disabled?: boolean;
+	className?: string;
+	children: ReactNode;
+	onClick: () => void;
+};
+
+export const IconButton = ({
+	label,
+	active = false,
+	disabled = false,
+	className = "",
+	children,
+	onClick,
+}: IconButtonProps): FunctionComponent => (
+	<button
+		aria-label={label}
+		aria-pressed={active}
+		disabled={disabled}
+		title={label}
+		type="button"
+		className={`flex items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+			active
+				? "bg-sky-500/90 text-white"
+				: "text-zinc-300 hover:bg-zinc-700 hover:text-white"
+		} ${className}`}
+		onClick={onClick}
+	>
+		{children}
+	</button>
+);
+
+type TextButtonProps = {
+	children: ReactNode;
+	title?: string;
+	active?: boolean;
+	variant?: "default" | "primary";
+	disabled?: boolean;
+	onClick: () => void;
+};
+
+export const TextButton = ({
+	children,
+	title,
+	active = false,
+	variant = "default",
+	disabled = false,
+	onClick,
+}: TextButtonProps): FunctionComponent => {
+	let style = "bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border-zinc-700";
+	if (variant === "primary")
+		style = "bg-sky-600 text-white hover:bg-sky-500 border-sky-500";
+	if (active) style = "bg-sky-500/90 text-white border-sky-400";
+	return (
+		<button
+			className={`h-7 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:opacity-40 ${style}`}
+			disabled={disabled}
+			title={title}
+			type="button"
+			onClick={onClick}
+		>
+			{children}
+		</button>
+	);
+};
+
+type ToggleProps = { label: string; checked: boolean; onChange: () => void };
+
+export const Toggle = ({
+	label,
+	checked,
+	onChange,
+}: ToggleProps): FunctionComponent => (
+	<label className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300">
+		<input
+			checked={checked}
+			className="h-3.5 w-3.5 accent-sky-500"
+			type="checkbox"
+			onChange={onChange}
+		/>
+		{label}
+	</label>
+);
+
+type ModalProps = {
+	title: string;
+	children: ReactNode;
+	footer: ReactNode;
+	onClose: () => void;
+};
+
+export const Modal = ({
+	title,
+	children,
+	footer,
+	onClose,
+}: ModalProps): FunctionComponent => {
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === "Escape") onClose();
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return (): void => {
+			window.removeEventListener("keydown", onKeyDown);
+		};
+	}, [onClose]);
+
+	return (
+		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+			<div
+				aria-label={title}
+				aria-modal="true"
+				className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl"
+				role="dialog"
+			>
+				<div className="border-b border-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-100">
+					{title}
+				</div>
+				<div className="px-5 py-4 text-sm text-zinc-300">{children}</div>
+				<div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-3">
+					{footer}
+				</div>
+			</div>
+		</div>
+	);
+};
+
+export const Divider = (): FunctionComponent => (
+	<div className="mx-1 h-5 w-px shrink-0 bg-zinc-700" />
+);
