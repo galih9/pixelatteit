@@ -6,6 +6,7 @@ import { LayersPanel } from "./components/LayersPanel";
 import { PixelCanvas } from "./components/PixelCanvas";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { StatusBar } from "./components/StatusBar";
+import { Timeline } from "./components/Timeline";
 import { Toolbar } from "./components/Toolbar";
 import { ToolOptions } from "./components/ToolOptions";
 import { TopBar } from "./components/TopBar";
@@ -32,6 +33,7 @@ export const PixelEditor = (): FunctionComponent => {
 					<PreviewPanel />
 				</aside>
 			</div>
+			<Timeline />
 			<StatusBar />
 			<Dialogs />
 		</div>

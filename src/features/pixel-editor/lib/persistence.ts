@@ -1,5 +1,18 @@
 import { DEFAULT_PALETTE, MAX_CANVAS_SIZE } from "../constants";
-import type { Layer } from "../types";
+import type {
+	Frame,
+	FrameTag,
+	Layer,
+	PixelBuffer,
+	TagDirection,
+} from "../types";
+import {
+	celsOf,
+	clampDuration,
+	clampTags,
+	createFrame,
+	createTag,
+} from "./animation";
 import { normalizeHex } from "./color";
 import { compositeLayers, createLayer, reserveLayerIds } from "./layers";
 import { decodePixels, encodePixels } from "./raster";
@@ -11,9 +24,13 @@ export type DocumentData = {
 	name: string;
 	width: number;
 	height: number;
-	/** Bottom → top, every entry with up-to-date pixels. */
+	/** Bottom → top, with the current frame's up-to-date pixels. */
 	layers: Array<Layer>;
 	activeLayer: number;
+	/** Every frame with up-to-date cels (keyed by the ids in `layers`). */
+	frames: Array<Frame>;
+	currentFrame: number;
+	tags: Array<FrameTag>;
 	palette: Array<string>;
 	primaryColor: string;
 	secondaryColor: string;
@@ -27,9 +44,17 @@ type SerializedLayer = {
 	pixels: string;
 };
 
+type SerializedFrame = {
+	duration: number;
+	/** One entry per layer (same order): index into `cels`, or -1 = empty. */
+	cels: Array<number>;
+};
+
+type SerializedTag = Omit<FrameTag, "id">;
+
 type SerializedDocument = {
 	format: typeof PROJECT_FORMAT;
-	version: 1 | 2;
+	version: 1 | 2 | 3;
 	name: string;
 	width: number;
 	height: number;
@@ -38,15 +63,108 @@ type SerializedDocument = {
 	/** v2+ */
 	layers?: Array<SerializedLayer>;
 	activeLayer?: number;
+	/** v3+: animation. `layers[].pixels` still holds the current frame. */
+	frames?: Array<SerializedFrame>;
+	/** v3+: pool of encoded cels (see `encodeCel`), shared between frames. */
+	cels?: Array<string>;
+	currentFrame?: number;
+	tags?: Array<SerializedTag>;
 	palette: Array<string>;
 	primaryColor: string;
 	secondaryColor: string;
 };
 
+/* -------------------------------------------------------------------------- */
+/*                                Cel encoding                                */
+/* -------------------------------------------------------------------------- */
+
+const RLE_PREFIX = "r:";
+
+/**
+ * Pixel art is mostly runs of the same value, so cels are stored as
+ * run-length pairs (count, packed RGBA) when that is smaller than raw bytes.
+ * Raw cels are plain base64 like v2 layers.
+ */
+export function encodeCel(pixels: PixelBuffer): string {
+	const runs: Array<number> = [];
+	let index = 0;
+	while (index < pixels.length) {
+		const value = pixels[index] ?? 0;
+		let end = index + 1;
+		while (end < pixels.length && pixels[end] === value) end++;
+		runs.push(end - index, value);
+		index = end;
+		if (runs.length >= pixels.length) break;
+	}
+	if (runs.length >= pixels.length) return encodePixels(pixels);
+	return RLE_PREFIX + encodePixels(Uint32Array.from(runs));
+}
+
+export function decodeCel(
+	encoded: string,
+	pixelCount: number
+): PixelBuffer | null {
+	if (!encoded.startsWith(RLE_PREFIX)) return decodePixels(encoded, pixelCount);
+	const body = encoded.slice(RLE_PREFIX.length);
+	// The run list's length is unknown up front: base64 → bytes → pairs.
+	const byteLength =
+		Math.floor((body.length * 3) / 4) -
+		(body.endsWith("==") ? 2 : body.endsWith("=") ? 1 : 0);
+	if (byteLength % 8 !== 0) return null;
+	const runs = decodePixels(body, byteLength / 4);
+	if (!runs) return null;
+	const pixels = new Uint32Array(pixelCount);
+	let offset = 0;
+	for (let index = 0; index < runs.length; index += 2) {
+		const count = runs[index] ?? 0;
+		if (count === 0 || offset + count > pixelCount) return null;
+		pixels.fill(runs[index + 1] ?? 0, offset, offset + count);
+		offset += count;
+	}
+	return offset === pixelCount ? pixels : null;
+}
+
+function isEmpty(pixels: PixelBuffer): boolean {
+	for (const value of pixels) if (value >>> 24 !== 0) return false;
+	return true;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 Serializing                                */
+/* -------------------------------------------------------------------------- */
+
+function serializeFrames(
+	document: DocumentData
+): Pick<SerializedDocument, "frames" | "cels"> {
+	const pool: Array<string> = [];
+	// Duplicated frames share pixel buffers, so they are stored once.
+	const byBuffer = new Map<PixelBuffer, number>();
+	const byText = new Map<string, number>();
+	const frames = document.frames.map((frame) => ({
+		duration: frame.duration,
+		cels: document.layers.map((layer) => {
+			const pixels = frame.cels[layer.id];
+			if (!pixels || isEmpty(pixels)) return -1;
+			const known = byBuffer.get(pixels);
+			if (known !== undefined) return known;
+			const text = encodeCel(pixels);
+			let index = byText.get(text);
+			if (index === undefined) {
+				index = pool.length;
+				pool.push(text);
+				byText.set(text, index);
+			}
+			byBuffer.set(pixels, index);
+			return index;
+		}),
+	}));
+	return { frames, cels: pool };
+}
+
 export function serializeDocument(document: DocumentData): string {
 	const serialized: SerializedDocument = {
 		format: PROJECT_FORMAT,
-		version: 2,
+		version: 3,
 		name: document.name,
 		width: document.width,
 		height: document.height,
@@ -60,11 +178,85 @@ export function serializeDocument(document: DocumentData): string {
 			pixels: encodePixels(layer.pixels),
 		})),
 		activeLayer: document.activeLayer,
+		...serializeFrames(document),
+		currentFrame: document.currentFrame,
+		tags: document.tags.map((tag) => ({
+			name: tag.name,
+			from: tag.from,
+			to: tag.to,
+			color: tag.color,
+			direction: tag.direction,
+		})),
 		palette: document.palette,
 		primaryColor: document.primaryColor,
 		secondaryColor: document.secondaryColor,
 	};
 	return JSON.stringify(serialized);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   Parsing                                  */
+/* -------------------------------------------------------------------------- */
+
+function parseFrames(
+	raw: Partial<SerializedDocument>,
+	layers: Array<Layer>,
+	pixelCount: number
+): Array<Frame> {
+	if (!Array.isArray(raw.frames) || raw.frames.length === 0) {
+		return [createFrame(celsOf(layers))];
+	}
+	const pool = Array.isArray(raw.cels) ? raw.cels : [];
+	const decoded = new Map<number, PixelBuffer | null>();
+	const celAt = (index: unknown): PixelBuffer | undefined => {
+		if (typeof index !== "number" || index < 0) return undefined;
+		if (!decoded.has(index)) {
+			const text = pool[index];
+			decoded.set(
+				index,
+				typeof text === "string" ? decodeCel(text, pixelCount) : null
+			);
+		}
+		return decoded.get(index) ?? undefined;
+	};
+	return raw.frames.map((entry) => {
+		const cels: Frame["cels"] = {};
+		const indices = Array.isArray(entry.cels) ? entry.cels : [];
+		for (const [position, layer] of layers.entries()) {
+			const pixels = celAt(indices[position]);
+			if (pixels) cels[layer.id] = pixels;
+		}
+		return createFrame(
+			cels,
+			typeof entry.duration === "number" ? clampDuration(entry.duration) : 100
+		);
+	});
+}
+
+const DIRECTIONS = new Set<TagDirection>(["forward", "reverse", "pingpong"]);
+
+function parseTags(
+	raw: Partial<SerializedDocument>,
+	frameCount: number
+): Array<FrameTag> {
+	if (!Array.isArray(raw.tags)) return [];
+	const tags: Array<FrameTag> = [];
+	for (const entry of raw.tags) {
+		if (typeof entry !== "object") continue;
+		const from = Number(entry.from);
+		const to = Number(entry.to);
+		if (!Number.isInteger(from) || !Number.isInteger(to)) continue;
+		const tag = createTag(
+			from,
+			to,
+			tags,
+			typeof entry.name === "string" ? entry.name : undefined
+		);
+		if (typeof entry.color === "string") tag.color = normalizeHex(entry.color);
+		if (DIRECTIONS.has(entry.direction)) tag.direction = entry.direction;
+		tags.push(tag);
+	}
+	return clampTags(tags, frameCount);
 }
 
 function parseLayers(
@@ -126,6 +318,14 @@ export function parseDocument(text: string): DocumentData | null {
 			raw.activeLayer < layers.length
 				? raw.activeLayer
 				: layers.length - 1;
+		const frames = parseFrames(raw, layers, raw.width * raw.height);
+		const currentFrame =
+			typeof raw.currentFrame === "number" &&
+			Number.isInteger(raw.currentFrame) &&
+			raw.currentFrame >= 0 &&
+			raw.currentFrame < frames.length
+				? raw.currentFrame
+				: 0;
 		const palette = Array.isArray(raw.palette)
 			? raw.palette
 					.filter((c): c is string => typeof c === "string")
@@ -137,6 +337,9 @@ export function parseDocument(text: string): DocumentData | null {
 			height: raw.height,
 			layers,
 			activeLayer,
+			frames,
+			currentFrame,
+			tags: parseTags(raw, frames.length),
 			palette,
 			primaryColor: normalizeHex(raw.primaryColor ?? "#000000"),
 			secondaryColor: normalizeHex(raw.secondaryColor ?? "#ffffff"),

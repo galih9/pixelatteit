@@ -85,7 +85,7 @@ export const TopBar = (): FunctionComponent => {
 			</IconButton>
 			<IconButton
 				className={iconClass}
-				label="Export PNG (Ctrl+E)"
+				label="Export PNG / GIF (Ctrl+E)"
 				onClick={() => {
 					openDialog("export");
 				}}

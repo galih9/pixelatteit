@@ -17,6 +17,7 @@ import {
 	packedToHex,
 	TRANSPARENT,
 } from "../lib/color";
+import { onionSkinPixels } from "../lib/animation";
 import { createBlurSampler } from "../lib/filters";
 import { publishFrame } from "../lib/liveView";
 import {
@@ -263,6 +264,8 @@ export const PixelCanvas = (): FunctionComponent => {
 	const overlayLayerRef = useRef<Konva.Layer>(null);
 	const antsOffsetRef = useRef(0);
 	const [bufferCanvas] = useState(() => document.createElement("canvas"));
+	const [onionCanvas] = useState(() => document.createElement("canvas"));
+	const [showOnion, setShowOnion] = useState(false);
 	const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
 	const [hover, setHover] = useState<Point | null>(null);
 	const [preview, setPreview] = useState<Preview>(null);
@@ -345,6 +348,63 @@ export const PixelCanvas = (): FunctionComponent => {
 			container?.removeEventListener("pixel-live-draw", onLiveDraw);
 		};
 	}, [bufferCanvas]);
+
+	/* ------------------------------ onion skin ---------------------------- */
+
+	useEffect(() => {
+		const render = (state: EditorState): void => {
+			const pixels =
+				state.onionSkin && !state.playing
+					? onionSkinPixels(
+							state.layers,
+							state.frames,
+							state.currentFrame,
+							state.onionBefore,
+							state.onionAfter,
+							state.width * state.height
+						)
+					: null;
+			setShowOnion(pixels !== null);
+			if (!pixels) return;
+			if (
+				onionCanvas.width !== state.width ||
+				onionCanvas.height !== state.height
+			) {
+				onionCanvas.width = state.width;
+				onionCanvas.height = state.height;
+			}
+			onionCanvas
+				.getContext("2d")
+				?.putImageData(
+					new ImageData(
+						new Uint8ClampedArray(pixels.buffer),
+						state.width,
+						state.height
+					),
+					0,
+					0
+				);
+			imageLayerRef.current?.batchDraw();
+		};
+		render(getState());
+		return useEditorStore.subscribe((state, previous) => {
+			if (
+				state.onionSkin !== previous.onionSkin ||
+				state.onionBefore !== previous.onionBefore ||
+				state.onionAfter !== previous.onionAfter ||
+				state.playing !== previous.playing ||
+				state.currentFrame !== previous.currentFrame ||
+				state.width !== previous.width ||
+				state.height !== previous.height ||
+				// Other frames only change through frame / layer operations.
+				(state.onionSkin &&
+					(state.frames !== previous.frames ||
+						state.layers !== previous.layers))
+			) {
+				render(state);
+			}
+		});
+	}, [onionCanvas]);
 
 	/* ------------------------------ viewport ------------------------------ */
 
@@ -500,6 +560,8 @@ export const PixelCanvas = (): FunctionComponent => {
 				return;
 			}
 			if (event.button !== 0 && event.button !== 2) return;
+			// Drawing on a playing animation would land on a random frame.
+			if (startState.playing) startState.setPlaying(false);
 			container.setPointerCapture(event.pointerId);
 			const primary = event.button === 0;
 			let activeTool = startState.tool;
@@ -1024,6 +1086,9 @@ export const PixelCanvas = (): FunctionComponent => {
 								}
 							}}
 						/>
+						{showOnion && (
+							<KonvaImage height={height} image={onionCanvas} width={width} />
+						)}
 						<KonvaImage height={height} image={bufferCanvas} width={width} />
 					</Group>
 				</Layer>

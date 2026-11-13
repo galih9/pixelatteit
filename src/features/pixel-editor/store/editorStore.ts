@@ -4,11 +4,26 @@ import {
 	DEFAULT_PALETTE,
 	MAX_BRUSH_SIZE,
 	MAX_CANVAS_SIZE,
+	MAX_FRAMES,
 	MAX_HISTORY,
 	MAX_LAYERS,
 	MIN_CANVAS_SIZE,
 	ZOOM_LEVELS,
 } from "../constants";
+import {
+	celsOf,
+	clampDuration,
+	clampTags,
+	compositeFrame,
+	createFrame,
+	createTag,
+	layersForFrame,
+	mapCels,
+	moveItem,
+	tagsAfterDelete,
+	tagsAfterInsert,
+	withoutCel,
+} from "../lib/animation";
 import { hexToPacked, normalizeHex } from "../lib/color";
 import {
 	blurPixels,
@@ -41,6 +56,8 @@ import type {
 	Clip,
 	DialogKind,
 	Floating,
+	Frame,
+	FrameTag,
 	Layer,
 	Notice,
 	PixelBuffer,
@@ -59,9 +76,13 @@ type DocumentState = {
 	height: number;
 	/** Pixels of the active layer (the live copy, see `Layer`). */
 	pixels: PixelBuffer;
-	/** Bottom → top. */
+	/** Bottom → top. Shared by every frame; pixels are the current frame's. */
 	layers: Array<Layer>;
 	activeLayer: number;
+	/** Animation frames (see `Frame`: the current one's cels can be stale). */
+	frames: Array<Frame>;
+	currentFrame: number;
+	tags: Array<FrameTag>;
 	selection: SelectionMask | null;
 	floating: Floating | null;
 	undoStack: Array<Snapshot>;
@@ -101,6 +122,14 @@ type ViewState = {
 	cursor: Point | null;
 	dialog: DialogKind | null;
 	notice: Notice | null;
+	/** Animation playback on the main canvas. */
+	playing: boolean;
+	/** Tag id to loop while playing, null = every frame. */
+	playTag: number | null;
+	onionSkin: boolean;
+	/** How many frames before / after the current one the onion skin shows. */
+	onionBefore: number;
+	onionAfter: number;
 };
 
 type Actions = {
@@ -128,6 +157,26 @@ type Actions = {
 	setLayerVisible: (index: number, visible: boolean) => void;
 	soloLayer: (index: number) => void;
 	setLayerOpacity: (index: number, opacity: number) => void;
+	// frames
+	setCurrentFrame: (index: number) => void;
+	/** Selects a layer and a frame at once (a timeline cel). */
+	selectCel: (layerIndex: number, frameIndex: number) => void;
+	addFrame: () => void;
+	duplicateFrame: () => void;
+	deleteFrame: () => void;
+	moveFrame: (from: number, to: number) => void;
+	setFrameDuration: (index: number, duration: number) => void;
+	setFramesDuration: (from: number, to: number, duration: number) => void;
+	// tags
+	addTag: (from: number, to: number) => void;
+	updateTag: (id: number, patch: Partial<Omit<FrameTag, "id">>) => void;
+	deleteTag: (id: number) => void;
+	// playback & onion skin
+	setPlaying: (playing: boolean) => void;
+	togglePlaying: () => void;
+	setPlayTag: (id: number | null) => void;
+	toggleOnionSkin: () => void;
+	setOnionRange: (before: number, after: number) => void;
 	// filters
 	blurLayer: () => void;
 	applyOutline: (options: OutlineOptions, toNewLayer: boolean) => void;
@@ -201,6 +250,9 @@ function snapshotOf(state: EditorState): Snapshot {
 		selection: state.selection,
 		layers: state.layers,
 		activeLayer: state.activeLayer,
+		frames: state.frames,
+		currentFrame: state.currentFrame,
+		tags: state.tags,
 	};
 }
 
@@ -213,6 +265,32 @@ export function syncedLayers(
 			? { ...layer, pixels: state.pixels }
 			: layer
 	);
+}
+
+/** Every frame with its current cels (the current one comes from `layers`). */
+export function syncedFrames(
+	state: Pick<
+		EditorState,
+		"layers" | "activeLayer" | "pixels" | "frames" | "currentFrame"
+	>
+): Array<Frame> {
+	const cels = celsOf(syncedLayers(state));
+	return state.frames.map((frame, index) =>
+		index === state.currentFrame ? { ...frame, cels } : frame
+	);
+}
+
+/** Frame durations are tweaks like layer opacity: history keeps the live ones. */
+function restoreFrames(
+	snapshot: Array<Frame>,
+	current: Array<Frame>
+): Array<Frame> {
+	return snapshot.map((frame) => {
+		const live = current.find((candidate) => candidate.id === frame.id);
+		return live && live.duration !== frame.duration
+			? { ...frame, duration: live.duration }
+			: frame;
+	});
 }
 
 /**
@@ -246,6 +324,32 @@ function layersPatch(
 		layers,
 		activeLayer,
 		pixels: layers[activeLayer]?.pixels ?? new Uint32Array(0),
+	};
+}
+
+/**
+ * State patch that makes `frames` the animation and shows frame `index`, with
+ * `layers` (their names/visibility/opacity) loaded with that frame's cels.
+ */
+function framesPatch(
+	layers: Array<Layer>,
+	frames: Array<Frame>,
+	index: number,
+	active: number,
+	width: number,
+	height: number
+): Pick<
+	EditorState,
+	"frames" | "currentFrame" | "layers" | "activeLayer" | "pixels"
+> {
+	const currentFrame = Math.max(0, Math.min(frames.length - 1, index));
+	return {
+		frames,
+		currentFrame,
+		...layersPatch(
+			layersForFrame(layers, frames[currentFrame], width, height),
+			active
+		),
 	};
 }
 
@@ -365,6 +469,13 @@ const initialActive = Math.min(
 	saved?.activeLayer ?? initialLayers.length - 1,
 	initialLayers.length - 1
 );
+const initialFrames = saved?.frames.length
+	? saved.frames
+	: [createFrame(celsOf(initialLayers))];
+const initialFrame = Math.max(
+	0,
+	Math.min(saved?.currentFrame ?? 0, initialFrames.length - 1)
+);
 
 /* -------------------------------------------------------------------------- */
 /*                                    Store                                   */
@@ -374,7 +485,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	name: saved?.name ?? "untitled",
 	width: saved?.width ?? DEFAULT_CANVAS_SIZE,
 	height: saved?.height ?? DEFAULT_CANVAS_SIZE,
-	...layersPatch(initialLayers, initialActive),
+	...framesPatch(
+		initialLayers,
+		initialFrames,
+		initialFrame,
+		initialActive,
+		saved?.width ?? DEFAULT_CANVAS_SIZE,
+		saved?.height ?? DEFAULT_CANVAS_SIZE
+	),
+	tags: saved?.tags ?? [],
 	selection: null,
 	floating: null,
 	undoStack: [],
@@ -415,6 +534,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	cursor: null,
 	dialog: null,
 	notice: null,
+	playing: false,
+	playTag: null,
+	onionSkin: false,
+	onionBefore: 1,
+	onionAfter: 1,
 
 	/* ------------------------------- document ------------------------------ */
 
@@ -430,12 +554,16 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		get().anchorFloating();
 		const w = clampSize(width);
 		const h = clampSize(height);
+		const layer = createLayer(w, h, "Layer 1");
 		set((state) => ({
 			...withHistory(state),
 			name: "untitled",
 			width: w,
 			height: h,
-			...layersPatch([createLayer(w, h, "Layer 1")], 0),
+			...framesPatch([layer], [createFrame(celsOf([layer]))], 0, 0, w, h),
+			tags: [],
+			playing: false,
+			playTag: null,
 			selection: null,
 			textDraft: null,
 		}));
@@ -450,19 +578,19 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 			...withHistory(state),
 			width: w,
 			height: h,
-			...layersPatch(
-				syncedLayers(state).map((layer) => ({
-					...layer,
-					pixels: resizePixels(
-						layer.pixels,
-						state.width,
-						state.height,
-						w,
-						h,
-						anchor
+			// Every frame gets resized, not only the one on screen.
+			...framesPatch(
+				state.layers,
+				syncedFrames(state).map((frame) => ({
+					...frame,
+					cels: mapCels(frame.cels, (pixels) =>
+						resizePixels(pixels, state.width, state.height, w, h, anchor)
 					),
 				})),
-				state.activeLayer
+				state.currentFrame,
+				state.activeLayer,
+				w,
+				h
 			),
 			selection: null,
 			textDraft: null,
@@ -475,12 +603,25 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		const layers = document.layers ?? [
 			createLayer(document.width, document.height, "Layer 1", document.pixels),
 		];
+		const frames = document.frames?.length
+			? document.frames
+			: [createFrame(celsOf(layers))];
 		set((state) => ({
 			...withHistory(state),
 			name: document.name ?? state.name,
 			width: document.width,
 			height: document.height,
-			...layersPatch(layers, document.activeLayer ?? layers.length - 1),
+			...framesPatch(
+				layers,
+				frames,
+				document.currentFrame ?? 0,
+				document.activeLayer ?? layers.length - 1,
+				document.width,
+				document.height
+			),
+			tags: clampTags(document.tags ?? [], frames.length),
+			playing: false,
+			playTag: null,
 			selection: null,
 			textDraft: null,
 			palette: document.palette ?? state.palette,
@@ -510,6 +651,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 			redoStack: [...state.redoStack, snapshotOf(state)],
 			...previous,
 			layers: restoreLayers(previous.layers, state.layers),
+			frames: restoreFrames(previous.frames, state.frames),
 			textDraft: null,
 		});
 		if (resized) get().fitView();
@@ -526,6 +668,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 			undoStack: [...state.undoStack, snapshotOf(state)],
 			...next,
 			layers: restoreLayers(next.layers, state.layers),
+			frames: restoreFrames(next.frames, state.frames),
 			textDraft: null,
 		});
 		if (resized) get().fitView();
@@ -601,7 +744,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		copy.opacity = source.opacity;
 		const position = state.activeLayer + 1;
 		layers.splice(position, 0, copy);
-		set({ ...withHistory(state), ...layersPatch(layers, position) });
+		// The copy gets the source layer's pixels in every frame.
+		const frames = syncedFrames(state).map((frame) => {
+			const cel = frame.cels[source.id];
+			return cel
+				? { ...frame, cels: { ...frame.cels, [copy.id]: cel } }
+				: frame;
+		});
+		set({ ...withHistory(state), frames, ...layersPatch(layers, position) });
 	},
 
 	deleteLayer: (): void => {
@@ -612,11 +762,19 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 			state.showNotice("A drawing needs at least one layer");
 			return;
 		}
+		const removed = state.layers[state.activeLayer];
 		const layers = syncedLayers(state).filter(
 			(_, index) => index !== state.activeLayer
 		);
+		const frames = removed
+			? state.frames.map((frame) => ({
+					...frame,
+					cels: withoutCel(frame.cels, removed.id),
+				}))
+			: state.frames;
 		set({
 			...withHistory(state),
+			frames,
 			...layersPatch(layers, state.activeLayer - 1),
 			selection: null,
 		});
@@ -650,15 +808,34 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		if (!top || !bottom) return;
 		// Hidden layers merge as if visible: the user asked for it explicitly.
 		// The top layer's opacity gets baked in; the bottom keeps its own.
-		const merged = compositeLayers(
-			[
-				{ ...bottom, visible: true, opacity: 100 },
-				{ ...top, visible: true },
-			],
-			state.width * state.height
-		);
-		layers.splice(index - 1, 2, { ...bottom, pixels: merged });
-		set({ ...withHistory(state), ...layersPatch(layers, index - 1) });
+		// Merging happens in every frame.
+		const pixelCount = state.width * state.height;
+		const frames = syncedFrames(state).map((frame) => {
+			const topCel = frame.cels[top.id];
+			const cels = withoutCel(frame.cels, top.id);
+			if (!topCel) return { ...frame, cels };
+			cels[bottom.id] = compositeFrame(
+				[
+					{ id: bottom.id, visible: true, opacity: 100 },
+					{ id: top.id, visible: true, opacity: top.opacity },
+				],
+				frame,
+				pixelCount
+			);
+			return { ...frame, cels };
+		});
+		layers.splice(index - 1, 2, bottom);
+		set({
+			...withHistory(state),
+			...framesPatch(
+				layers,
+				frames,
+				state.currentFrame,
+				index - 1,
+				state.width,
+				state.height
+			),
+		});
 	},
 
 	flattenImage: (): void => {
@@ -666,12 +843,23 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		get().anchorFloating();
 		const state = get();
 		if (state.layers.length <= 1) return;
-		const flat = compositeLayers(
-			syncedLayers(state),
-			state.width * state.height
-		);
-		const layer = createLayer(state.width, state.height, "Layer 1", flat);
-		set({ ...withHistory(state), ...layersPatch([layer], 0) });
+		const layer = createLayer(state.width, state.height, "Layer 1");
+		const pixelCount = state.width * state.height;
+		const frames = syncedFrames(state).map((frame) => ({
+			...frame,
+			cels: { [layer.id]: compositeFrame(state.layers, frame, pixelCount) },
+		}));
+		set({
+			...withHistory(state),
+			...framesPatch(
+				[layer],
+				frames,
+				state.currentFrame,
+				0,
+				state.width,
+				state.height
+			),
+		});
 	},
 
 	renameLayer: (index, name): void => {
@@ -712,6 +900,225 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 				position === index ? { ...layer, opacity: value } : layer
 			),
 		}));
+	},
+
+	/* -------------------------------- frames ------------------------------- */
+
+	setCurrentFrame: (index): void => {
+		const state = get();
+		if (index === state.currentFrame || !state.frames[index]) return;
+		state.commitText();
+		get().anchorFloating();
+		const current = get();
+		set(
+			framesPatch(
+				current.layers,
+				syncedFrames(current),
+				index,
+				current.activeLayer,
+				current.width,
+				current.height
+			)
+		);
+	},
+
+	selectCel: (layerIndex, frameIndex): void => {
+		get().setCurrentFrame(frameIndex);
+		get().setActiveLayer(layerIndex);
+	},
+
+	addFrame: (): void => {
+		get().commitText();
+		get().anchorFloating();
+		const state = get();
+		if (state.frames.length >= MAX_FRAMES) {
+			state.showNotice(`You can have up to ${MAX_FRAMES} frames`);
+			return;
+		}
+		const frames = syncedFrames(state);
+		const position = state.currentFrame + 1;
+		const duration = frames[state.currentFrame]?.duration;
+		frames.splice(position, 0, createFrame({}, duration));
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				position,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+			tags: tagsAfterInsert(state.tags, position),
+		});
+	},
+
+	duplicateFrame: (): void => {
+		get().commitText();
+		get().anchorFloating();
+		const state = get();
+		if (state.frames.length >= MAX_FRAMES) {
+			state.showNotice(`You can have up to ${MAX_FRAMES} frames`);
+			return;
+		}
+		const frames = syncedFrames(state);
+		const source = frames[state.currentFrame];
+		if (!source) return;
+		const position = state.currentFrame + 1;
+		// Pixel buffers are immutable, so the copy can share them.
+		frames.splice(
+			position,
+			0,
+			createFrame({ ...source.cels }, source.duration)
+		);
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				position,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+			tags: tagsAfterInsert(state.tags, position),
+		});
+	},
+
+	deleteFrame: (): void => {
+		get().cancelText();
+		get().anchorFloating();
+		const state = get();
+		if (state.frames.length <= 1) {
+			state.showNotice("An animation needs at least one frame");
+			return;
+		}
+		const frames = syncedFrames(state).filter(
+			(_, index) => index !== state.currentFrame
+		);
+		const tags = tagsAfterDelete(state.tags, state.currentFrame);
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				Math.max(0, state.currentFrame - 1),
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+			tags,
+			playing: frames.length > 1 && state.playing,
+			playTag: tags.some((tag) => tag.id === state.playTag)
+				? state.playTag
+				: null,
+		});
+	},
+
+	moveFrame: (from, to): void => {
+		get().commitText();
+		get().anchorFloating();
+		const state = get();
+		const target = Math.max(0, Math.min(state.frames.length - 1, to));
+		if (from === target || !state.frames[from]) return;
+		const frames = moveItem(syncedFrames(state), from, target);
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				target,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+		});
+	},
+
+	setFrameDuration: (index, duration): void => {
+		get().setFramesDuration(index, index, duration);
+	},
+
+	setFramesDuration: (from, to, duration): void => {
+		const value = clampDuration(duration);
+		set((state) => ({
+			frames: state.frames.map((frame, index) =>
+				index >= from && index <= to && frame.duration !== value
+					? { ...frame, duration: value }
+					: frame
+			),
+		}));
+	},
+
+	/* --------------------------------- tags -------------------------------- */
+
+	addTag: (from, to): void => {
+		const state = get();
+		const last = state.frames.length - 1;
+		const tag = createTag(
+			Math.max(0, Math.min(last, from)),
+			Math.max(0, Math.min(last, to)),
+			state.tags
+		);
+		set({ ...withHistory(state), tags: [...state.tags, tag] });
+	},
+
+	updateTag: (id, patch): void => {
+		const state = get();
+		const last = state.frames.length - 1;
+		const tags = state.tags.map((tag) => {
+			if (tag.id !== id) return tag;
+			const next = { ...tag, ...patch };
+			const from = Math.max(0, Math.min(last, Math.round(next.from)));
+			const to = Math.max(0, Math.min(last, Math.round(next.to)));
+			return {
+				...next,
+				name: next.name.trim() || tag.name,
+				from: Math.min(from, to),
+				to: Math.max(from, to),
+			};
+		});
+		set({ ...withHistory(state), tags });
+	},
+
+	deleteTag: (id): void => {
+		const state = get();
+		set({
+			...withHistory(state),
+			tags: state.tags.filter((tag) => tag.id !== id),
+			playTag: state.playTag === id ? null : state.playTag,
+		});
+	},
+
+	/* ------------------------- playback & onion skin ----------------------- */
+
+	setPlaying: (playing): void => {
+		const state = get();
+		if (playing === state.playing) return;
+		if (playing && state.frames.length < 2) return;
+		if (playing) {
+			state.commitText();
+			get().anchorFloating();
+		}
+		set({ playing });
+	},
+
+	togglePlaying: (): void => {
+		get().setPlaying(!get().playing);
+	},
+
+	setPlayTag: (playTag): void => {
+		set({ playTag });
+	},
+
+	toggleOnionSkin: (): void => {
+		set((state) => ({ onionSkin: !state.onionSkin }));
+	},
+
+	setOnionRange: (before, after): void => {
+		const clamp = (value: number): number =>
+			Math.max(0, Math.min(5, Math.round(value) || 0));
+		set({ onionBefore: clamp(before), onionAfter: clamp(after) });
 	},
 
 	/* ------------------------------- filters ------------------------------- */
@@ -1129,4 +1536,42 @@ export function documentLayers(state: EditorState): Array<Layer> {
 	return state.layers.map((layer, index) =>
 		index === state.activeLayer ? { ...layer, pixels: active } : layer
 	);
+}
+
+/** Every frame with up-to-date cels, floating selection dropped in. */
+export function documentFrames(state: EditorState): Array<Frame> {
+	const cels = celsOf(documentLayers(state));
+	return state.frames.map((frame, index) =>
+		index === state.currentFrame ? { ...frame, cels } : frame
+	);
+}
+
+/**
+ * Frame `index` flattened (visible layers). The current frame includes the
+ * floating selection, like the canvas.
+ */
+export function framePixels(state: EditorState, index: number): PixelBuffer {
+	if (index === state.currentFrame) return compositeView(state);
+	return compositeFrame(
+		state.layers,
+		state.frames[index],
+		state.width * state.height
+	);
+}
+
+/** The whole document, ready to save. */
+export function documentData(state: EditorState): DocumentData {
+	return {
+		name: state.name,
+		width: state.width,
+		height: state.height,
+		layers: documentLayers(state),
+		activeLayer: state.activeLayer,
+		frames: documentFrames(state),
+		currentFrame: state.currentFrame,
+		tags: state.tags,
+		palette: state.palette,
+		primaryColor: state.primaryColor,
+		secondaryColor: state.secondaryColor,
+	};
 }

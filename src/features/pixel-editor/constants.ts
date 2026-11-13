@@ -68,3 +68,5 @@ export const PAINT_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
 ]);
 
 export const MAX_LAYERS = 32;
+
+export const MAX_FRAMES = 256;

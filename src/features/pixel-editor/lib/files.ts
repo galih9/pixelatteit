@@ -1,12 +1,15 @@
 import { saveAs } from "file-saver";
 import { MAX_CANVAS_SIZE } from "../constants";
 import {
-	documentLayers,
+	documentData,
 	flattenedPixels,
+	framePixels,
 	useEditorStore,
 } from "../store/editorStore";
 import type { PixelBuffer } from "../types";
+import { sequenceFor } from "./animation";
 import { packedToHex } from "./color";
+import { encodeGif } from "./gif";
 import { parseDocument, serializeDocument } from "./persistence";
 import { uniqueOpaqueColors } from "./raster";
 
@@ -71,18 +74,47 @@ export function exportPng(scale: number, fileName?: string): void {
 	}, "image/png");
 }
 
-export function saveProject(): void {
+/**
+ * Exports the animation as a looping GIF. `tagId` limits it to one tag
+ * (played in the tag's direction); null exports every frame.
+ */
+export function exportGif(
+	scale: number,
+	tagId: number | null,
+	fileName?: string
+): void {
 	const state = useEditorStore.getState();
-	const text = serializeDocument({
-		name: state.name,
+	const tag = state.tags.find((candidate) => candidate.id === tagId) ?? null;
+	const sequence = sequenceFor(tag, state.frames.length);
+	const cache = new Map<number, PixelBuffer>();
+	const frames = sequence.map((index) => {
+		let pixels = cache.get(index);
+		if (!pixels) {
+			pixels = framePixels(state, index);
+			cache.set(index, pixels);
+		}
+		return { pixels, duration: state.frames[index]?.duration ?? 100 };
+	});
+	const { bytes, reduced } = encodeGif({
 		width: state.width,
 		height: state.height,
-		layers: documentLayers(state),
-		activeLayer: state.activeLayer,
-		palette: state.palette,
-		primaryColor: state.primaryColor,
-		secondaryColor: state.secondaryColor,
+		frames,
+		scale,
 	});
+	const tagSuffix = tag ? `-${safeName(tag.name)}` : "";
+	const scaleSuffix = scale === 1 ? "" : `@${scale}x`;
+	saveAs(
+		new Blob([bytes], { type: "image/gif" }),
+		`${safeName(fileName ?? state.name)}${tagSuffix}${scaleSuffix}.gif`
+	);
+	if (reduced) {
+		state.showNotice("GIF supports 256 colors: some colors were merged");
+	}
+}
+
+export function saveProject(): void {
+	const state = useEditorStore.getState();
+	const text = serializeDocument(documentData(state));
 	saveAs(
 		new Blob([text], { type: "application/json" }),
 		`${safeName(state.name)}.pixel.json`

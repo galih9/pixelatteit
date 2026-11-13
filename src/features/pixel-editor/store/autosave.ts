@@ -1,5 +1,5 @@
 import { writeAutosave } from "../lib/persistence";
-import { documentLayers, useEditorStore } from "./editorStore";
+import { documentData, useEditorStore } from "./editorStore";
 
 /** Saves the document to localStorage shortly after every change. */
 export function startAutosave(): () => void {
@@ -10,24 +10,20 @@ export function startAutosave(): () => void {
 			state.floating !== previous.floating ||
 			state.layers !== previous.layers ||
 			state.activeLayer !== previous.activeLayer ||
+			state.frames !== previous.frames ||
+			state.currentFrame !== previous.currentFrame ||
+			state.tags !== previous.tags ||
+			state.playing !== previous.playing ||
 			state.palette !== previous.palette ||
 			state.name !== previous.name ||
 			state.primaryColor !== previous.primaryColor ||
 			state.secondaryColor !== previous.secondaryColor;
 		if (!changed) return;
 		window.clearTimeout(timer);
+		// Playback switches frames many times a second; save once it stops.
+		if (state.playing) return;
 		timer = window.setTimeout(() => {
-			const current = useEditorStore.getState();
-			writeAutosave({
-				name: current.name,
-				width: current.width,
-				height: current.height,
-				layers: documentLayers(current),
-				activeLayer: current.activeLayer,
-				palette: current.palette,
-				primaryColor: current.primaryColor,
-				secondaryColor: current.secondaryColor,
-			});
+			writeAutosave(documentData(useEditorStore.getState()));
 		}, 400);
 	});
 	return (): void => {

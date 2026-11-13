@@ -17,7 +17,7 @@ export const Toolbar = (): FunctionComponent => {
 	return (
 		<nav
 			aria-label="Tools"
-			className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-zinc-800 bg-zinc-900 py-2"
+			className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden border-r border-zinc-800 bg-zinc-900 py-2"
 		>
 			{TOOLS.map((info) => (
 				<div key={info.id} className="flex flex-col items-center">

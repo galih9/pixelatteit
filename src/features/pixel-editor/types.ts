@@ -54,6 +54,34 @@ export type Layer = {
 	pixels: PixelBuffer;
 };
 
+/**
+ * One animation frame. Layers are shared by every frame; a frame only holds
+ * the pixels ("cels") of each layer, keyed by layer id. A missing entry is an
+ * empty (fully transparent) cel.
+ *
+ * Note: for the *current* frame the live pixels are kept in `EditorState.layers`
+ * (and `pixels` for the active layer), so `frames[currentFrame].cels` can be
+ * stale. Use `syncedFrames()` from the store when you need every frame.
+ */
+export type Frame = {
+	id: number;
+	/** How long the frame is shown, in milliseconds. */
+	duration: number;
+	cels: Partial<Record<number, PixelBuffer>>;
+};
+
+export type TagDirection = "forward" | "reverse" | "pingpong";
+
+/** A named range of frames, e.g. "walk" = frames 0–5. Indices are inclusive. */
+export type FrameTag = {
+	id: number;
+	name: string;
+	from: number;
+	to: number;
+	color: string;
+	direction: TagDirection;
+};
+
 export type Snapshot = {
 	width: number;
 	height: number;
@@ -61,6 +89,9 @@ export type Snapshot = {
 	selection: SelectionMask | null;
 	layers: Array<Layer>;
 	activeLayer: number;
+	frames: Array<Frame>;
+	currentFrame: number;
+	tags: Array<FrameTag>;
 };
 
 export type Clip = {
