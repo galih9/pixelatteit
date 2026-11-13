@@ -64,3 +64,45 @@
 .pixel-color-picker .react-colorful__last-control {
 	border-radius: 0 0 6px 6px;
 }
+
+/* Native <dialog> modal backdrop and scroll-chaining guard */
+dialog.editor-modal:modal {
+	margin: auto;
+	overscroll-behavior: contain;
+}
+
+dialog.editor-modal::backdrop {
+	background: rgb(0 0 0 / 60%);
+	overflow: hidden;
+	overscroll-behavior: contain;
+}
+
+/* Preserve color swatch colors in Forced Colors Mode */
+.swatch-preserve {
+	forced-color-adjust: none;
+}
+
+/* Viewport-aware anchored popovers using native CSS Anchor Positioning where supported */
+.editor-popover[popover] {
+	inset: auto;
+	margin: 0;
+	max-height: min(22rem, 75dvh);
+	overflow: auto;
+	overscroll-behavior: contain;
+}
+
+@supports (position-area: block-end) {
+	.editor-popover[popover] {
+		position-area: block-end span-inline-end;
+		position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+	}
+}
+
+@supports not (position-area: block-end) {
+	.editor-popover[popover] {
+		position: fixed;
+		inset-block-start: 50%;
+		inset-inline-start: 50%;
+		transform: translate(-50%, -50%);
+	}
+}

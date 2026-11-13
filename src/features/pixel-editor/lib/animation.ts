@@ -36,11 +36,14 @@ export function clampDuration(value: number): number {
 
 export function createFrame(
 	cels: Frame["cels"] = {},
-	duration = DEFAULT_FRAME_DURATION
+	duration = DEFAULT_FRAME_DURATION,
+	linked?: Frame["linked"]
 ): Frame {
 	const id = nextFrameId;
 	nextFrameId += 1;
-	return { id, duration: clampDuration(duration), cels };
+	return linked
+		? { id, duration: clampDuration(duration), cels, linked }
+		: { id, duration: clampDuration(duration), cels };
 }
 
 export function createTag(
@@ -70,7 +73,9 @@ export function createTag(
 /** Layer pixels → the cels of a frame. */
 export function celsOf(layers: Array<Layer>): Frame["cels"] {
 	const cels: Frame["cels"] = {};
-	for (const layer of layers) cels[layer.id] = layer.pixels;
+	for (const layer of layers) {
+		if (layer.kind !== "reference") cels[layer.id] = layer.pixels;
+	}
 	return cels;
 }
 
@@ -81,10 +86,14 @@ export function layersForFrame(
 	width: number,
 	height: number
 ): Array<Layer> {
-	return layers.map((layer) => ({
-		...layer,
-		pixels: frame?.cels[layer.id] ?? createPixels(width, height),
-	}));
+	return layers.map((layer) =>
+		layer.kind === "reference"
+			? layer
+			: {
+					...layer,
+					pixels: frame?.cels[layer.id] ?? createPixels(width, height),
+				}
+	);
 }
 
 /** Applies `transform` to every cel of a frame. */
@@ -111,14 +120,15 @@ export function withoutCel(
 	return result;
 }
 
-/** A frame flattened: visible layers composited with their opacity. */
+/** A frame flattened: visible pixel layers composited with their opacity. */
 export function compositeFrame(
-	layers: Array<Pick<Layer, "id" | "visible" | "opacity">>,
+	layers: Array<Pick<Layer, "id" | "visible" | "opacity" | "kind">>,
 	frame: Pick<Frame, "cels"> | undefined,
 	pixelCount: number
 ): PixelBuffer {
 	const inputs = [];
 	for (const layer of layers) {
+		if (layer.kind === "reference") continue;
 		const pixels = frame?.cels[layer.id];
 		if (pixels) {
 			inputs.push({ pixels, visible: layer.visible, opacity: layer.opacity });
@@ -277,7 +287,7 @@ const ONION_AFTER_TINT = [56, 160, 255];
  * Returns null when there is nothing to show.
  */
 export function onionSkinPixels(
-	layers: Array<Pick<Layer, "id" | "visible" | "opacity">>,
+	layers: Array<Pick<Layer, "id" | "visible" | "opacity" | "kind">>,
 	frames: Array<Frame>,
 	current: number,
 	before: number,

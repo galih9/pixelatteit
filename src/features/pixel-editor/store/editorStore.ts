@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
 	DEFAULT_CANVAS_SIZE,
+	DEFAULT_COLOR_RAMP,
 	DEFAULT_PALETTE,
 	MAX_BRUSH_SIZE,
 	MAX_CANVAS_SIZE,
@@ -17,6 +18,7 @@ import {
 	compositeFrame,
 	createFrame,
 	createTag,
+	isEmptyCel,
 	layersForFrame,
 	mapCels,
 	moveItem,
@@ -24,7 +26,7 @@ import {
 	tagsAfterInsert,
 	withoutCel,
 } from "../lib/animation";
-import { hexToPacked, normalizeHex } from "../lib/color";
+import { hexToPacked, normalizeHex, stepColorShade } from "../lib/color";
 import {
 	blurPixels,
 	computeOutline,
@@ -32,12 +34,20 @@ import {
 	type OutlineOptions,
 	overlayPixels,
 } from "../lib/filters";
-import { compositeLayers, createLayer, nextLayerName } from "../lib/layers";
+import {
+	compositeLayers,
+	createLayer,
+	createReferenceLayer,
+	nextLayerName,
+} from "../lib/layers";
 import { type DocumentData, loadAutosave } from "../lib/persistence";
 import { renderText } from "../lib/text";
 import {
+	captureBrushFromSelection,
 	combineMasks,
 	compositeFloating,
+	createDefaultCustomBrush,
+	createPixels,
 	eraseMasked,
 	extractClip,
 	flipPixels,
@@ -48,13 +58,17 @@ import {
 	plot,
 	maskIsEmpty,
 	placeClip,
+	replaceColorInBuffer,
 	resizePixels,
 	shiftMask,
 } from "../lib/raster";
 import type {
 	BrushShape,
 	Clip,
+	ColorRampOptions,
+	CustomBrush,
 	DialogKind,
+	DitherPattern,
 	Floating,
 	Frame,
 	FrameTag,
@@ -62,6 +76,8 @@ import type {
 	Notice,
 	PixelBuffer,
 	Point,
+	ReferenceImageData,
+	ReplaceScope,
 	ResizeAnchor,
 	SelectionMask,
 	SelectionMode,
@@ -88,6 +104,7 @@ type DocumentState = {
 	undoStack: Array<Snapshot>;
 	redoStack: Array<Snapshot>;
 	clipboard: Clip | null;
+	celClipboard: PixelBuffer | null;
 };
 
 type ToolState = {
@@ -97,11 +114,22 @@ type ToolState = {
 	palette: Array<string>;
 	brushSize: number;
 	brushShape: BrushShape;
+	customBrush: CustomBrush;
 	pixelPerfect: boolean;
 	shapeFilled: boolean;
 	fillContiguous: boolean;
+	ditherPattern: DitherPattern;
+	ditherDensity: number;
+	ditherTwoColor: boolean;
+	replaceFromColor: string | null;
+	replaceTolerance: number;
+	replaceScope: ReplaceScope;
 	symmetryX: boolean;
 	symmetryY: boolean;
+	symmetryXPos: number | null;
+	symmetryYPos: number | null;
+	symmetryDiagonal: boolean;
+	colorRampOptions: ColorRampOptions;
 	blurStrength: number;
 	blurRadius: number;
 	blurPreserveAlpha: boolean;
@@ -148,16 +176,24 @@ type Actions = {
 	// layers
 	setActiveLayer: (index: number) => void;
 	addLayer: () => void;
+	addReferenceLayer: (reference: ReferenceImageData, name?: string) => void;
+	updateReferenceLayer: (
+		index: number,
+		patch: Partial<ReferenceImageData>
+	) => void;
+	fitReferenceLayer: (index: number) => void;
 	duplicateLayer: () => void;
 	deleteLayer: () => void;
 	moveLayer: (direction: 1 | -1) => void;
+	moveLayerTo: (fromIndex: number, toIndex: number) => void;
 	mergeDown: () => void;
 	flattenImage: () => void;
 	renameLayer: (index: number, name: string) => void;
 	setLayerVisible: (index: number, visible: boolean) => void;
+	toggleLayerLock: (index: number) => void;
 	soloLayer: (index: number) => void;
 	setLayerOpacity: (index: number, opacity: number) => void;
-	// frames
+	// frames & cels
 	setCurrentFrame: (index: number) => void;
 	/** Selects a layer and a frame at once (a timeline cel). */
 	selectCel: (layerIndex: number, frameIndex: number) => void;
@@ -167,6 +203,12 @@ type Actions = {
 	moveFrame: (from: number, to: number) => void;
 	setFrameDuration: (index: number, duration: number) => void;
 	setFramesDuration: (from: number, to: number, duration: number) => void;
+	clearCel: (layerIndex: number, frameIndex: number) => void;
+	duplicateCel: (layerIndex: number, frameIndex: number) => void;
+	copyCel: (layerIndex: number, frameIndex: number) => void;
+	pasteCel: (layerIndex: number, frameIndex: number) => void;
+	linkCels: (layerIndex: number, fromFrame: number, toFrame: number) => void;
+	unlinkCel: (layerIndex: number, frameIndex: number) => void;
 	// tags
 	addTag: (from: number, to: number) => void;
 	updateTag: (id: number, patch: Partial<Omit<FrameTag, "id">>) => void;
@@ -206,11 +248,31 @@ type Actions = {
 	swapColors: () => void;
 	setBrushSize: (size: number) => void;
 	setBrushShape: (shape: BrushShape) => void;
+	setCustomBrush: (brush: CustomBrush) => void;
+	captureCustomBrush: () => boolean;
 	togglePixelPerfect: () => void;
 	toggleShapeFilled: () => void;
 	toggleFillContiguous: () => void;
+	setDitherPattern: (pattern: DitherPattern) => void;
+	setDitherDensity: (density: number) => void;
+	toggleDitherTwoColor: () => void;
+	setReplaceFromColor: (color: string | null) => void;
+	setReplaceTolerance: (tolerance: number) => void;
+	setReplaceScope: (scope: ReplaceScope) => void;
+	replaceColor: (
+		fromColor: string,
+		toColor: string,
+		tolerance?: number,
+		scope?: ReplaceScope
+	) => number;
 	toggleSymmetryX: () => void;
 	toggleSymmetryY: () => void;
+	setSymmetryXPos: (pos: number | null) => void;
+	setSymmetryYPos: (pos: number | null) => void;
+	toggleSymmetryDiagonal: () => void;
+	resetSymmetryAxes: () => void;
+	setColorRampOptions: (patch: Partial<ColorRampOptions>) => void;
+	stepPrimaryShade: (direction: "shadow" | "highlight") => void;
 	setBlurStrength: (value: number) => void;
 	setBlurRadius: (value: number) => void;
 	toggleBlurPreserveAlpha: () => void;
@@ -309,6 +371,7 @@ function restoreLayers(
 					name: live.name,
 					visible: live.visible,
 					opacity: live.opacity,
+					locked: live.locked,
 				}
 			: layer;
 	});
@@ -461,6 +524,17 @@ function fitZoom(
 
 const saved = loadAutosave();
 let noticeId = 0;
+let nextLinkGroupId = 1;
+if (saved?.frames) {
+	for (const frame of saved.frames) {
+		if (!frame.linked) continue;
+		for (const groupId of Object.values(frame.linked)) {
+			if (typeof groupId === "number" && groupId >= nextLinkGroupId) {
+				nextLinkGroupId = groupId + 1;
+			}
+		}
+	}
+}
 
 const initialLayers = saved?.layers ?? [
 	createLayer(DEFAULT_CANVAS_SIZE, DEFAULT_CANVAS_SIZE, "Layer 1"),
@@ -499,6 +573,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	undoStack: [],
 	redoStack: [],
 	clipboard: null,
+	celClipboard: null,
 
 	tool: "pencil",
 	primaryColor: saved?.primaryColor ?? "#000000",
@@ -506,11 +581,22 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	palette: saved?.palette ?? DEFAULT_PALETTE,
 	brushSize: 1,
 	brushShape: "square",
+	customBrush: createDefaultCustomBrush(),
 	pixelPerfect: false,
 	shapeFilled: false,
 	fillContiguous: true,
+	ditherPattern: "bayer4",
+	ditherDensity: 50,
+	ditherTwoColor: false,
+	replaceFromColor: null,
+	replaceTolerance: 0,
+	replaceScope: "layer",
 	symmetryX: false,
 	symmetryY: false,
+	symmetryXPos: null,
+	symmetryYPos: null,
+	symmetryDiagonal: false,
+	colorRampOptions: DEFAULT_COLOR_RAMP,
 	blurStrength: 60,
 	blurRadius: 1,
 	blurPreserveAlpha: true,
@@ -543,11 +629,28 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	/* ------------------------------- document ------------------------------ */
 
 	commitPixels: (pixels, selection): void => {
-		set((state) => ({
-			...withHistory(state),
-			pixels,
-			...(selection === undefined ? {} : { selection }),
-		}));
+		set((state) => {
+			const activeLayerId = state.layers[state.activeLayer]?.id;
+			const linkGroup =
+				activeLayerId !== undefined
+					? state.frames[state.currentFrame]?.linked?.[activeLayerId]
+					: undefined;
+			const frames =
+				linkGroup && activeLayerId !== undefined
+					? state.frames.map((frame, index) =>
+							index !== state.currentFrame &&
+							frame.linked?.[activeLayerId] === linkGroup
+								? { ...frame, cels: { ...frame.cels, [activeLayerId]: pixels } }
+								: frame
+						)
+					: state.frames;
+			return {
+				...withHistory(state),
+				pixels,
+				frames,
+				...(selection === undefined ? {} : { selection }),
+			};
+		});
 	},
 
 	newCanvas: (width, height): void => {
@@ -606,6 +709,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		const frames = document.frames?.length
 			? document.frames
 			: [createFrame(celsOf(layers))];
+		for (const frame of frames) {
+			if (!frame.linked) continue;
+			for (const groupId of Object.values(frame.linked)) {
+				if (groupId !== undefined && groupId >= nextLinkGroupId) {
+					nextLinkGroupId = groupId + 1;
+				}
+			}
+		}
 		set((state) => ({
 			...withHistory(state),
 			name: document.name ?? state.name,
@@ -677,16 +788,27 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	flip: (axis): void => {
 		get().anchorFloating();
 		const state = get();
+		const active = state.layers[state.activeLayer];
 		if (!state.selection && state.layers.length > 1) {
-			// No selection: flip the whole image, every layer.
-			const layers = syncedLayers(state).map((layer) => ({
-				...layer,
-				pixels: flipPixels(layer.pixels, null, state.width, state.height, axis)
-					.pixels,
-			}));
+			// No selection: flip the whole image, every pixel layer.
+			const layers = syncedLayers(state).map((layer) =>
+				layer.kind === "reference"
+					? layer
+					: {
+							...layer,
+							pixels: flipPixels(
+								layer.pixels,
+								null,
+								state.width,
+								state.height,
+								axis
+							).pixels,
+						}
+			);
 			set({ ...withHistory(state), ...layersPatch(layers, state.activeLayer) });
 			return;
 		}
+		if (active?.kind === "reference") return;
 		const result = flipPixels(
 			state.pixels,
 			state.selection,
@@ -723,6 +845,56 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		set({ ...withHistory(state), ...layersPatch(layers, position) });
 	},
 
+	addReferenceLayer: (reference, name): void => {
+		get().commitText();
+		get().anchorFloating();
+		const state = get();
+		if (state.layers.length >= MAX_LAYERS) {
+			state.showNotice(`You can have up to ${MAX_LAYERS} layers`);
+			return;
+		}
+		const layers = syncedLayers(state);
+		const layerName = name?.trim() || nextLayerName(layers, "Reference");
+		const layer = createReferenceLayer(
+			state.width,
+			state.height,
+			layerName,
+			reference
+		);
+		// Put reference layers at the bottom by default so you draw over them.
+		layers.unshift(layer);
+		set({ ...withHistory(state), ...layersPatch(layers, 0) });
+	},
+
+	updateReferenceLayer: (index, patch): void => {
+		set((state) => ({
+			layers: state.layers.map((layer, position) =>
+				position === index && layer.kind === "reference" && layer.reference
+					? { ...layer, reference: { ...layer.reference, ...patch } }
+					: layer
+			),
+		}));
+	},
+
+	fitReferenceLayer: (index): void => {
+		const state = get();
+		const layer = state.layers[index];
+		if (!layer || layer.kind !== "reference" || !layer.reference) return;
+		const { naturalWidth, naturalHeight } = layer.reference;
+		const scale = Math.min(
+			state.width / naturalWidth,
+			state.height / naturalHeight
+		);
+		const fitW = naturalWidth * scale;
+		const fitH = naturalHeight * scale;
+		state.updateReferenceLayer(index, {
+			x: (state.width - fitW) / 2,
+			y: (state.height - fitH) / 2,
+			width: fitW,
+			height: fitH,
+		});
+	},
+
 	duplicateLayer: (): void => {
 		get().commitText();
 		get().anchorFloating();
@@ -734,23 +906,36 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		const layers = syncedLayers(state);
 		const source = layers[state.activeLayer];
 		if (!source) return;
-		const copy = createLayer(
-			state.width,
-			state.height,
-			`${source.name} copy`,
-			source.pixels.slice()
-		);
+		const copy =
+			source.kind === "reference" && source.reference
+				? createReferenceLayer(
+						state.width,
+						state.height,
+						`${source.name} copy`,
+						{ ...source.reference },
+						source.opacity
+					)
+				: createLayer(
+						state.width,
+						state.height,
+						`${source.name} copy`,
+						source.pixels.slice()
+					);
 		copy.visible = source.visible;
 		copy.opacity = source.opacity;
+		copy.locked = source.locked;
 		const position = state.activeLayer + 1;
 		layers.splice(position, 0, copy);
 		// The copy gets the source layer's pixels in every frame.
-		const frames = syncedFrames(state).map((frame) => {
-			const cel = frame.cels[source.id];
-			return cel
-				? { ...frame, cels: { ...frame.cels, [copy.id]: cel } }
-				: frame;
-		});
+		const frames =
+			source.kind === "reference"
+				? syncedFrames(state)
+				: syncedFrames(state).map((frame) => {
+						const cel = frame.cels[source.id];
+						return cel
+							? { ...frame, cels: { ...frame.cels, [copy.id]: cel } }
+							: frame;
+					});
 		set({ ...withHistory(state), frames, ...layersPatch(layers, position) });
 	},
 
@@ -767,10 +952,15 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 			(_, index) => index !== state.activeLayer
 		);
 		const frames = removed
-			? state.frames.map((frame) => ({
-					...frame,
-					cels: withoutCel(frame.cels, removed.id),
-				}))
+			? state.frames.map((frame) => {
+					const nextLinked = frame.linked ? { ...frame.linked } : undefined;
+					if (nextLinked) delete nextLinked[removed.id];
+					return {
+						...frame,
+						cels: withoutCel(frame.cels, removed.id),
+						...(nextLinked ? { linked: nextLinked } : {}),
+					};
+				})
 			: state.frames;
 		set({
 			...withHistory(state),
@@ -781,16 +971,36 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 	},
 
 	moveLayer: (direction): void => {
+		const state = get();
+		state.moveLayerTo(state.activeLayer, state.activeLayer + direction);
+	},
+
+	moveLayerTo: (fromIndex, toIndex): void => {
 		get().commitText();
 		get().anchorFloating();
 		const state = get();
-		const target = state.activeLayer + direction;
-		if (target < 0 || target >= state.layers.length) return;
+		if (
+			fromIndex < 0 ||
+			fromIndex >= state.layers.length ||
+			toIndex < 0 ||
+			toIndex >= state.layers.length ||
+			fromIndex === toIndex
+		) {
+			return;
+		}
 		const layers = syncedLayers(state);
-		const [moved] = layers.splice(state.activeLayer, 1);
+		const [moved] = layers.splice(fromIndex, 1);
 		if (!moved) return;
-		layers.splice(target, 0, moved);
-		set({ ...withHistory(state), ...layersPatch(layers, target) });
+		layers.splice(toIndex, 0, moved);
+		const nextActive =
+			state.activeLayer === fromIndex
+				? toIndex
+				: state.activeLayer > fromIndex && state.activeLayer <= toIndex
+					? state.activeLayer - 1
+					: state.activeLayer < fromIndex && state.activeLayer >= toIndex
+						? state.activeLayer + 1
+						: state.activeLayer;
+		set({ ...withHistory(state), ...layersPatch(layers, nextActive) });
 	},
 
 	mergeDown: (): void => {
@@ -806,6 +1016,10 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		const top = layers[index];
 		const bottom = layers[index - 1];
 		if (!top || !bottom) return;
+		if (top.kind === "reference" || bottom.kind === "reference") {
+			state.showNotice("Reference layers cannot be merged with pixel layers");
+			return;
+		}
 		// Hidden layers merge as if visible: the user asked for it explicitly.
 		// The top layer's opacity gets baked in; the bottom keeps its own.
 		// Merging happens in every frame.
@@ -842,20 +1056,27 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		get().commitText();
 		get().anchorFloating();
 		const state = get();
-		if (state.layers.length <= 1) return;
+		const pixelLayers = state.layers.filter(
+			(layer) => layer.kind !== "reference"
+		);
+		if (pixelLayers.length <= 1) return;
+		const refLayers = state.layers.filter(
+			(layer) => layer.kind === "reference"
+		);
 		const layer = createLayer(state.width, state.height, "Layer 1");
 		const pixelCount = state.width * state.height;
 		const frames = syncedFrames(state).map((frame) => ({
 			...frame,
 			cels: { [layer.id]: compositeFrame(state.layers, frame, pixelCount) },
 		}));
+		const nextLayers = [...refLayers, layer];
 		set({
 			...withHistory(state),
 			...framesPatch(
-				[layer],
+				nextLayers,
 				frames,
 				state.currentFrame,
-				0,
+				nextLayers.length - 1,
 				state.width,
 				state.height
 			),
@@ -875,6 +1096,14 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		set((state) => ({
 			layers: state.layers.map((layer, position) =>
 				position === index ? { ...layer, visible } : layer
+			),
+		}));
+	},
+
+	toggleLayerLock: (index): void => {
+		set((state) => ({
+			layers: state.layers.map((layer, position) =>
+				position === index ? { ...layer, locked: !layer.locked } : layer
 			),
 		}));
 	},
@@ -1048,6 +1277,214 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 					: frame
 			),
 		}));
+	},
+
+	clearCel: (layerIndex, frameIndex): void => {
+		get().anchorFloating();
+		const state = get();
+		const layer = state.layers[layerIndex];
+		const targetFrame = state.frames[frameIndex];
+		if (!layer || !targetFrame || layer.kind === "reference") return;
+		const empty = createPixels(state.width, state.height);
+		const linkGroup = targetFrame.linked?.[layer.id];
+		const frames = syncedFrames(state).map((frame, framePosition) => {
+			if (
+				framePosition === frameIndex ||
+				(linkGroup && frame.linked?.[layer.id] === linkGroup)
+			) {
+				return { ...frame, cels: withoutCel(frame.cels, layer.id) };
+			}
+			return frame;
+		});
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				state.currentFrame,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+			...(frameIndex === state.currentFrame && layerIndex === state.activeLayer
+				? { pixels: empty }
+				: {}),
+		});
+	},
+
+	duplicateCel: (layerIndex, frameIndex): void => {
+		get().anchorFloating();
+		const state = get();
+		const layer = state.layers[layerIndex];
+		if (!layer || layer.kind === "reference") return;
+		const frames = syncedFrames(state);
+		const source = frames[frameIndex]?.cels[layer.id];
+		const nextIndex = frameIndex + 1;
+		if (nextIndex >= frames.length) {
+			state.showNotice("No next frame to duplicate cel into");
+			return;
+		}
+		const updated = frames.map((frame, framePosition) => {
+			if (framePosition !== nextIndex) return frame;
+			const cels = source
+				? { ...frame.cels, [layer.id]: source.slice() }
+				: withoutCel(frame.cels, layer.id);
+			return { ...frame, cels };
+		});
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				updated,
+				nextIndex,
+				layerIndex,
+				state.width,
+				state.height
+			),
+		});
+	},
+
+	copyCel: (layerIndex, frameIndex): void => {
+		const state = get();
+		const layer = state.layers[layerIndex];
+		if (!layer || layer.kind === "reference") return;
+		const frames = syncedFrames(state);
+		const source = frames[frameIndex]?.cels[layer.id];
+		set({
+			celClipboard: source
+				? source.slice()
+				: createPixels(state.width, state.height),
+		});
+		state.showNotice("Copied cel");
+	},
+
+	pasteCel: (layerIndex, frameIndex): void => {
+		get().anchorFloating();
+		const state = get();
+		if (!state.celClipboard) {
+			state.showNotice("Copy a cel first");
+			return;
+		}
+		const layer = state.layers[layerIndex];
+		if (!layer || layer.kind === "reference") return;
+		const expected = state.width * state.height;
+		const pasted =
+			state.celClipboard.length === expected
+				? state.celClipboard.slice()
+				: resizePixels(
+						state.celClipboard,
+						state.width,
+						state.height,
+						state.width,
+						state.height,
+						"top-left"
+					);
+		const targetFrame = state.frames[frameIndex];
+		const linkGroup = targetFrame?.linked?.[layer.id];
+		const frames = syncedFrames(state).map((frame, framePosition) =>
+			framePosition === frameIndex ||
+			(linkGroup && frame.linked?.[layer.id] === linkGroup)
+				? { ...frame, cels: { ...frame.cels, [layer.id]: pasted } }
+				: frame
+		);
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				frameIndex,
+				layerIndex,
+				state.width,
+				state.height
+			),
+		});
+	},
+
+	linkCels: (layerIndex, fromFrame, toFrame): void => {
+		get().anchorFloating();
+		const state = get();
+		const layer = state.layers[layerIndex];
+		if (!layer || layer.kind === "reference") return;
+		const from = Math.max(0, Math.min(fromFrame, toFrame));
+		const to = Math.min(state.frames.length - 1, Math.max(fromFrame, toFrame));
+		if (to <= from) {
+			state.showNotice("Shift+click 2 or more frames to link cels");
+			return;
+		}
+		const frames = syncedFrames(state);
+		// Pick the first non-empty cel in the range (preferring the active frame if inside).
+		const currentCandidate =
+			state.currentFrame >= from && state.currentFrame <= to
+				? frames[state.currentFrame]?.cels[layer.id]
+				: undefined;
+		let shared: PixelBuffer | undefined =
+			currentCandidate && !isEmptyCel(currentCandidate)
+				? currentCandidate
+				: undefined;
+		if (!shared) {
+			for (let framePosition = from; framePosition <= to; framePosition++) {
+				const candidate = frames[framePosition]?.cels[layer.id];
+				if (candidate && !isEmptyCel(candidate)) {
+					shared = candidate;
+					break;
+				}
+			}
+		}
+		const buffer = shared ?? createPixels(state.width, state.height);
+		const groupId = nextLinkGroupId;
+		nextLinkGroupId += 1;
+		const updated = frames.map((frame, framePosition) => {
+			if (framePosition < from || framePosition > to) return frame;
+			return {
+				...frame,
+				cels: { ...frame.cels, [layer.id]: buffer },
+				linked: { ...frame.linked, [layer.id]: groupId },
+			};
+		});
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				updated,
+				state.currentFrame,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+		});
+		state.showNotice(`Linked frames ${from + 1}–${to + 1} on ${layer.name}`);
+	},
+
+	unlinkCel: (layerIndex, frameIndex): void => {
+		const state = get();
+		const layer = state.layers[layerIndex];
+		if (!layer) return;
+		const frame = state.frames[frameIndex];
+		if (!frame?.linked?.[layer.id]) return;
+		const frames = syncedFrames(state).map((candidate, framePosition) => {
+			if (framePosition !== frameIndex) return candidate;
+			const nextLinked = { ...candidate.linked };
+			delete nextLinked[layer.id];
+			const existing = candidate.cels[layer.id];
+			return {
+				...candidate,
+				cels: existing
+					? { ...candidate.cels, [layer.id]: existing.slice() }
+					: candidate.cels,
+				linked: nextLinked,
+			};
+		});
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				frames,
+				state.currentFrame,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+		});
 	},
 
 	/* --------------------------------- tags -------------------------------- */
@@ -1369,6 +1806,29 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		set({ brushShape });
 	},
 
+	setCustomBrush: (customBrush): void => {
+		set({ customBrush, brushShape: "custom" });
+	},
+
+	captureCustomBrush: (): boolean => {
+		const state = get();
+		const captured = captureBrushFromSelection(
+			state.pixels,
+			state.selection,
+			state.width,
+			state.height
+		);
+		if (!captured) {
+			state.showNotice("Select non-empty pixels first to capture a brush");
+			return false;
+		}
+		set({ customBrush: captured, brushShape: "custom" });
+		state.showNotice(
+			`Captured ${captured.width}×${captured.height} custom brush`
+		);
+		return true;
+	},
+
 	togglePixelPerfect: (): void => {
 		set((state) => ({ pixelPerfect: !state.pixelPerfect }));
 	},
@@ -1381,12 +1841,179 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
 		set((state) => ({ fillContiguous: !state.fillContiguous }));
 	},
 
+	setDitherPattern: (ditherPattern): void => {
+		set({ ditherPattern });
+	},
+
+	setDitherDensity: (density): void => {
+		set({ ditherDensity: Math.max(5, Math.min(100, Math.round(density))) });
+	},
+
+	toggleDitherTwoColor: (): void => {
+		set((state) => ({ ditherTwoColor: !state.ditherTwoColor }));
+	},
+
+	setReplaceFromColor: (color): void => {
+		set({ replaceFromColor: color ? normalizeHex(color) : null });
+	},
+
+	setReplaceTolerance: (tolerance): void => {
+		set({ replaceTolerance: Math.max(0, Math.min(100, Math.round(tolerance))) });
+	},
+
+	setReplaceScope: (replaceScope): void => {
+		set({ replaceScope });
+	},
+
+	replaceColor: (fromColor, toColor, tolerance, scope): number => {
+		get().anchorFloating();
+		const state = get();
+		const active = state.layers[state.activeLayer];
+		const actualTolerance = tolerance ?? state.replaceTolerance;
+		const actualScope = scope ?? state.replaceScope;
+		const normalizedFrom = normalizeHex(fromColor);
+		const normalizedTo = normalizeHex(toColor);
+		const targetPacked = hexToPacked(normalizedFrom);
+		const replacementPacked = hexToPacked(normalizedTo);
+		if (
+			actualScope === "layer" &&
+			(!active || active.kind === "reference" || active.locked)
+		) {
+			state.showNotice("Active layer is locked or a reference layer");
+			return 0;
+		}
+		const mask = state.selection;
+		if (actualScope === "layer") {
+			const { pixels, count } = replaceColorInBuffer(
+				state.pixels,
+				targetPacked,
+				replacementPacked,
+				mask,
+				actualTolerance
+			);
+			set({ replaceFromColor: normalizedFrom });
+			if (count === 0) return 0;
+			state.commitPixels(pixels);
+			state.showNotice(`Replaced ${count} pixel${count === 1 ? "" : "s"}`);
+			return count;
+		}
+
+		const frames = syncedFrames(state);
+		const targetFrames = new Set<number>(
+			actualScope === "all-frames"
+				? frames.map((_, index) => index)
+				: [state.currentFrame]
+		);
+		// Include any frame sharing a linked cel group with a targeted frame.
+		const processedGroups = new Map<string, { pixels: PixelBuffer; count: number }>();
+		let total = 0;
+
+		const updatedFrames = frames.map((frame, frameIndex) => {
+			const nextCels = Object.assign(
+				{} as Record<number, PixelBuffer>,
+				frame.cels
+			);
+			let changed = false;
+			for (const layer of state.layers) {
+				if (layer.kind === "reference" || layer.locked) continue;
+				const linkGroup = frame.linked?.[layer.id];
+				const inDirectScope = targetFrames.has(frameIndex);
+				const groupKey = linkGroup ? `${layer.id}:${linkGroup}` : null;
+				if (!inDirectScope && !(groupKey && processedGroups.has(groupKey))) {
+					continue;
+				}
+				const cached = groupKey ? processedGroups.get(groupKey) : undefined;
+				if (cached) {
+					nextCels[layer.id] = cached.pixels;
+					changed = true;
+					continue;
+				}
+				const source = frame.cels[layer.id];
+				if (!source) continue;
+				const result = replaceColorInBuffer(
+					source,
+					targetPacked,
+					replacementPacked,
+					mask,
+					actualTolerance
+				);
+				if (result.count > 0) {
+					total += result.count;
+					nextCels[layer.id] = result.pixels;
+					changed = true;
+					if (groupKey) {
+						processedGroups.set(groupKey, result);
+					}
+				}
+			}
+			return changed ? { ...frame, cels: nextCels } : frame;
+		});
+
+		set({ replaceFromColor: normalizedFrom });
+		if (total === 0) return 0;
+		set({
+			...withHistory(state),
+			...framesPatch(
+				state.layers,
+				updatedFrames,
+				state.currentFrame,
+				state.activeLayer,
+				state.width,
+				state.height
+			),
+		});
+		state.showNotice(`Replaced ${total} pixel${total === 1 ? "" : "s"}`);
+		return total;
+	},
+
 	toggleSymmetryX: (): void => {
 		set((state) => ({ symmetryX: !state.symmetryX }));
 	},
 
 	toggleSymmetryY: (): void => {
 		set((state) => ({ symmetryY: !state.symmetryY }));
+	},
+
+	setSymmetryXPos: (position): void => {
+		set((state) => ({
+			symmetryXPos:
+				position === null
+					? null
+					: Math.max(0.5, Math.min(state.width - 0.5, position)),
+		}));
+	},
+
+	setSymmetryYPos: (position): void => {
+		set((state) => ({
+			symmetryYPos:
+				position === null
+					? null
+					: Math.max(0.5, Math.min(state.height - 0.5, position)),
+		}));
+	},
+
+	toggleSymmetryDiagonal: (): void => {
+		set((state) => ({ symmetryDiagonal: !state.symmetryDiagonal }));
+	},
+
+	resetSymmetryAxes: (): void => {
+		set({ symmetryXPos: null, symmetryYPos: null, symmetryDiagonal: false });
+	},
+
+	setColorRampOptions: (patch): void => {
+		set((state) => ({
+			colorRampOptions: { ...state.colorRampOptions, ...patch },
+		}));
+	},
+
+	stepPrimaryShade: (direction): void => {
+		set((state) => ({
+			primaryColor: stepColorShade(
+				state.primaryColor,
+				direction,
+				state.colorRampOptions
+			),
+		}));
 	},
 
 	setBlurStrength: (value): void => {

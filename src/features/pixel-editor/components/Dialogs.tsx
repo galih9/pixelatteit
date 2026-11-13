@@ -5,6 +5,7 @@ import { sequenceDuration, sequenceFor } from "../lib/animation";
 import { exportGif, exportPng } from "../lib/files";
 import { useEditorStore } from "../store/editorStore";
 import type { ResizeAnchor } from "../types";
+import { CustomBrushDialog } from "./CustomBrushDialog";
 import { OutlineDialog } from "./OutlineDialog";
 import { Modal, TextButton } from "./ui";
 
@@ -262,6 +263,7 @@ const ExportDialog = ({
 
 const SHORTCUTS: Array<[string, string]> = [
 	["B / E / G / I", "Pencil / Eraser / Fill / Eyedropper"],
+	["P / C", "Dithering brush / Magic color replace"],
 	["L / U / O", "Line / Rectangle / Ellipse"],
 	["M / Q / W", "Rect select / Lasso / Magic wand"],
 	["D / R / T", "Contour / Blur brush / Text"],
@@ -323,5 +325,6 @@ export const Dialogs = (): FunctionComponent => {
 	if (dialog === "export") return <ExportDialog onClose={close} />;
 	if (dialog === "help") return <HelpDialog onClose={close} />;
 	if (dialog === "outline") return <OutlineDialog onClose={close} />;
+	if (dialog === "custom-brush") return <CustomBrushDialog onClose={close} />;
 	return null;
 };

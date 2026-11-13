@@ -1,4 +1,4 @@
-import type { Layer, PixelBuffer } from "../types";
+import type { Layer, PixelBuffer, ReferenceImageData } from "../types";
 import { createPixels } from "./raster";
 
 let nextLayerId = 1;
@@ -17,6 +17,29 @@ export function createLayer(
 		visible: true,
 		opacity: 100,
 		pixels: pixels ?? createPixels(width, height),
+		kind: "pixel",
+		locked: false,
+	};
+}
+
+export function createReferenceLayer(
+	width: number,
+	height: number,
+	name: string,
+	reference: ReferenceImageData,
+	opacity = 55
+): Layer {
+	const id = nextLayerId;
+	nextLayerId += 1;
+	return {
+		id,
+		name,
+		visible: true,
+		opacity,
+		pixels: createPixels(width, height),
+		kind: "reference",
+		locked: false,
+		reference,
 	};
 }
 
@@ -36,17 +59,19 @@ export function nextLayerName(layers: Array<Layer>, base = "Layer"): string {
 	}
 }
 
-type CompositeInput = Pick<Layer, "pixels" | "visible" | "opacity">;
+type CompositeInput = Pick<Layer, "pixels" | "visible" | "opacity" | "kind">;
 
 /**
  * Flattens layers (bottom → top) with normal "source over" blending,
- * taking each layer's opacity into account. Hidden layers are skipped.
+ * taking each layer's opacity into account. Hidden and reference layers are skipped.
  */
 export function compositeLayers(
 	layers: Array<CompositeInput>,
 	pixelCount: number
 ): PixelBuffer {
-	const visible = layers.filter((layer) => layer.visible && layer.opacity > 0);
+	const visible = layers.filter(
+		(layer) => layer.kind !== "reference" && layer.visible && layer.opacity > 0
+	);
 	const only = visible[0];
 	if (visible.length === 1 && only && only.opacity >= 100) return only.pixels;
 

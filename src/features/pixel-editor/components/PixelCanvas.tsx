@@ -22,7 +22,6 @@ import { createBlurSampler } from "../lib/filters";
 import { publishFrame } from "../lib/liveView";
 import {
 	brushOffsets,
-	brushOrigin,
 	constrainLine,
 	constrainSquare,
 	ellipsePoints,
@@ -36,8 +35,11 @@ import {
 	restorePixel,
 	selectionEdges,
 	stamp,
+	stampDither,
+	symmetricPoints,
 	type PaintTarget,
 } from "../lib/raster";
+import { compositeLayers } from "../lib/layers";
 import { renderText } from "../lib/text";
 import {
 	compositeView,
@@ -46,7 +48,14 @@ import {
 	visiblePixels,
 	withTextPreview,
 } from "../store/editorStore";
-import type { BrushShape, PixelBuffer, Point, SelectionMode } from "../types";
+import type {
+	BrushShape,
+	CustomBrush,
+	DitherPattern,
+	PixelBuffer,
+	Point,
+	SelectionMode,
+} from "../types";
 
 type ShapeTool = "line" | "rectangle" | "ellipse";
 
@@ -60,7 +69,20 @@ type Interaction =
 			stroke: Array<Point>;
 			size: number;
 			shape: BrushShape;
+			customBrush: CustomBrush;
 			pixelPerfect: boolean;
+	  }
+	| {
+			kind: "dither";
+			primaryColor: number;
+			secondaryColor: number | null;
+			target: PaintTarget;
+			last: Point;
+			size: number;
+			shape: BrushShape;
+			customBrush: CustomBrush;
+			pattern: DitherPattern;
+			density: number;
 	  }
 	| {
 			kind: "shape";
@@ -71,6 +93,7 @@ type Interaction =
 			start: Point;
 			size: number;
 			shape: BrushShape;
+			customBrush: CustomBrush;
 			filled: boolean;
 	  }
 	| {
@@ -82,6 +105,13 @@ type Interaction =
 	  }
 	| { kind: "lasso"; points: Array<Point>; mode: SelectionMode }
 	| { kind: "move"; start: Point; originX: number; originY: number }
+	| {
+			kind: "ref-move";
+			layerIndex: number;
+			start: Point;
+			originX: number;
+			originY: number;
+	  }
 	| {
 			kind: "pan";
 			clientX: number;
@@ -98,6 +128,7 @@ type Interaction =
 			last: Point;
 			size: number;
 			shape: BrushShape;
+			customBrush: CustomBrush;
 	  }
 	| {
 			kind: "contour";
@@ -108,6 +139,7 @@ type Interaction =
 			last: Point;
 			size: number;
 			shape: BrushShape;
+			customBrush: CustomBrush;
 	  }
 	| { kind: "text-move"; start: Point; originX: number; originY: number };
 
@@ -142,8 +174,20 @@ function paintPoint(
 	point: Point
 ): void {
 	const { target, color, stroke } = interaction;
-	if (!interaction.pixelPerfect || interaction.size > 1) {
-		stamp(target, point.x, point.y, interaction.size, interaction.shape, color);
+	if (
+		!interaction.pixelPerfect ||
+		interaction.size > 1 ||
+		interaction.shape === "custom"
+	) {
+		stamp(
+			target,
+			point.x,
+			point.y,
+			interaction.size,
+			interaction.shape,
+			color,
+			interaction.customBrush
+		);
 		return;
 	}
 	// Pixel-perfect: drop the corner pixel of every "L" shape in the stroke.
@@ -199,7 +243,8 @@ function drawShape(
 			point.y,
 			interaction.size,
 			interaction.shape,
-			interaction.color
+			interaction.color,
+			interaction.customBrush
 		);
 	}
 }
@@ -209,17 +254,24 @@ function blurAt(
 	point: Point
 ): void {
 	const { target, touched } = interaction;
-	for (const offset of brushOffsets(interaction.size, interaction.shape)) {
-		const x = point.x + offset.x;
-		const y = point.y + offset.y;
-		if (x < 0 || y < 0 || x >= target.width || y >= target.height) continue;
-		const index = y * target.width + x;
-		if (touched[index] === 1) continue;
-		if (target.mask && target.mask[index] !== 1) continue;
-		// Each pixel is blurred once per stroke, from the original pixels,
-		// so a stroke is predictable: drag again to blur more.
-		touched[index] = 1;
-		target.data[index] = interaction.sample(x, y);
+	const offsets = brushOffsets(
+		interaction.size,
+		interaction.shape,
+		interaction.customBrush
+	);
+	for (const center of symmetricPoints(target, point.x, point.y)) {
+		for (const offset of offsets) {
+			const x = center.x + offset.x;
+			const y = center.y + offset.y;
+			if (x < 0 || y < 0 || x >= target.width || y >= target.height) continue;
+			const index = y * target.width + x;
+			if (touched[index] === 1) continue;
+			if (target.mask && target.mask[index] !== 1) continue;
+			// Each pixel is blurred once per stroke, from the original pixels,
+			// so a stroke is predictable: drag again to blur more.
+			touched[index] = 1;
+			target.data[index] = interaction.sample(x, y);
+		}
 	}
 }
 
@@ -245,8 +297,29 @@ function drawContour(
 		}
 	}
 	for (const point of path) {
-		stamp(target, point.x, point.y, interaction.size, interaction.shape, color);
+		stamp(
+			target,
+			point.x,
+			point.y,
+			interaction.size,
+			interaction.shape,
+			color,
+			interaction.customBrush
+		);
 	}
+}
+
+function offsetSetEdges(offsets: Array<Point>): Array<number> {
+	const cells = new Set(offsets.map((offset) => `${offset.x},${offset.y}`));
+	const edges: Array<number> = [];
+	for (const offset of offsets) {
+		const { x, y } = offset;
+		if (!cells.has(`${x},${y - 1}`)) edges.push(x, y, x + 1, y);
+		if (!cells.has(`${x + 1},${y}`)) edges.push(x + 1, y, x + 1, y + 1);
+		if (!cells.has(`${x},${y + 1}`)) edges.push(x, y + 1, x + 1, y + 1);
+		if (!cells.has(`${x - 1},${y}`)) edges.push(x, y, x, y + 1);
+	}
+	return edges;
 }
 
 /** Size of the text box being placed (a caret-sized box when empty). */
@@ -258,10 +331,53 @@ function textBox(state: Pick<EditorState, "textValue" | "textStyle">): {
 	return { width: Math.max(1, bitmap.width), height: bitmap.height };
 }
 
+type RenderSlice =
+	| { kind: "pixels"; key: string; startIndex: number; endIndex: number }
+	| { kind: "reference"; key: string; layerId: number };
+
+function buildRenderSlices(layers: EditorState["layers"]): Array<RenderSlice> {
+	const slices: Array<RenderSlice> = [];
+	let runStart: number | null = null;
+	layers.forEach((layer, index) => {
+		if (layer.kind === "reference") {
+			if (!layer.visible || !layer.reference) return;
+			if (runStart !== null) {
+				slices.push({
+					kind: "pixels",
+					key: `pixels-${slices.length}`,
+					startIndex: runStart,
+					endIndex: index - 1,
+				});
+				runStart = null;
+			}
+			slices.push({
+				kind: "reference",
+				key: `ref-${layer.id}`,
+				layerId: layer.id,
+			});
+		} else if (runStart === null) {
+			runStart = index;
+		}
+	});
+	if (runStart !== null) {
+		slices.push({
+			kind: "pixels",
+			key: `pixels-${slices.length}`,
+			startIndex: runStart,
+			endIndex: layers.length - 1,
+		});
+	}
+	return slices;
+}
+
 export const PixelCanvas = (): FunctionComponent => {
 	const containerRef = useRef<HTMLDivElement>(null);
+	const stageRef = useRef<Konva.Stage>(null);
 	const imageLayerRef = useRef<Konva.Layer>(null);
 	const overlayLayerRef = useRef<Konva.Layer>(null);
+	const sliceCanvasesRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
+	const referenceImagesRef = useRef<Map<string, HTMLImageElement>>(new Map());
+	const [, setReferenceImageTick] = useState(0);
 	const antsOffsetRef = useRef(0);
 	const [bufferCanvas] = useState(() => document.createElement("canvas"));
 	const [onionCanvas] = useState(() => document.createElement("canvas"));
@@ -280,23 +396,51 @@ export const PixelCanvas = (): FunctionComponent => {
 	const showGrid = useEditorStore((state) => state.showGrid);
 	const tool = useEditorStore((state) => state.tool);
 	const brushSize = useEditorStore((state) => state.brushSize);
+	const brushShape = useEditorStore((state) => state.brushShape);
+	const customBrush = useEditorStore((state) => state.customBrush);
+	const layers = useEditorStore((state) => state.layers);
 	const selection = useEditorStore((state) => state.selection);
 	const floating = useEditorStore((state) => state.floating);
 	const symmetryX = useEditorStore((state) => state.symmetryX);
 	const symmetryY = useEditorStore((state) => state.symmetryY);
+	const symmetryXPos = useEditorStore((state) => state.symmetryXPos);
+	const symmetryYPos = useEditorStore((state) => state.symmetryYPos);
+	const symmetryDiagonal = useEditorStore((state) => state.symmetryDiagonal);
 	const textDraft = useEditorStore((state) => state.textDraft);
 	const textValue = useEditorStore((state) => state.textValue);
 	const textStyle = useEditorStore((state) => state.textStyle);
 
+	const renderSlices = useMemo(() => buildRenderSlices(layers), [layers]);
+
+	// Preload reference layer images whenever reference sources change.
+	useEffect(() => {
+		for (const layer of layers) {
+			if (layer.kind !== "reference" || !layer.reference?.src) continue;
+			const source = layer.reference.src;
+			if (referenceImagesRef.current.has(source)) continue;
+			const image = new Image();
+			image.onload = (): void => {
+				setReferenceImageTick((tick) => tick + 1);
+			};
+			image.src = source;
+			referenceImagesRef.current.set(source, image);
+		}
+	}, [layers]);
+
 	/* --------------------------- pixel rendering -------------------------- */
 
 	useEffect(() => {
-		const draw = (data: PixelBuffer, w: number, h: number): void => {
-			if (bufferCanvas.width !== w || bufferCanvas.height !== h) {
-				bufferCanvas.width = w;
-				bufferCanvas.height = h;
+		const putPixels = (
+			canvas: HTMLCanvasElement,
+			data: PixelBuffer,
+			w: number,
+			h: number
+		): void => {
+			if (canvas.width !== w || canvas.height !== h) {
+				canvas.width = w;
+				canvas.height = h;
 			}
-			const context = bufferCanvas.getContext("2d");
+			const context = canvas.getContext("2d");
 			if (!context) return;
 			context.putImageData(
 				new ImageData(
@@ -307,19 +451,50 @@ export const PixelCanvas = (): FunctionComponent => {
 				0,
 				0
 			);
-			imageLayerRef.current?.batchDraw();
+		};
+		const draw = (state: EditorState, activePixels: PixelBuffer): void => {
+			const composited = compositeView(state, activePixels);
+			putPixels(bufferCanvas, composited, state.width, state.height);
 			publishFrame(bufferCanvas);
+
+			const slices = buildRenderSlices(state.layers);
+			const pixelSlices = slices.filter(
+				(slice): slice is Extract<RenderSlice, { kind: "pixels" }> =>
+					slice.kind === "pixels"
+			);
+			if (pixelSlices.length > 1) {
+				for (const slice of pixelSlices) {
+					let canvas = sliceCanvasesRef.current.get(slice.key);
+					if (!canvas) {
+						canvas = document.createElement("canvas");
+						sliceCanvasesRef.current.set(slice.key, canvas);
+					}
+					const subset = state.layers
+						.slice(slice.startIndex, slice.endIndex + 1)
+						.map((layer, offset) =>
+							slice.startIndex + offset === state.activeLayer
+								? { ...layer, pixels: activePixels }
+								: layer
+						);
+					putPixels(
+						canvas,
+						compositeLayers(subset, state.width * state.height),
+						state.width,
+						state.height
+					);
+				}
+			}
+			stageRef.current?.batchDraw();
 		};
 		const drawState = (state: EditorState): void => {
 			const active = withTextPreview(state, visiblePixels(state));
-			draw(compositeView(state, active), state.width, state.height);
+			draw(state, active);
 		};
 		drawState(getState());
 		// Strokes in progress call `draw` directly through this event.
 		const onLiveDraw = (event: Event): void => {
 			const detail = (event as CustomEvent<PixelBuffer>).detail;
-			const state = getState();
-			draw(compositeView(state, detail), state.width, state.height);
+			draw(getState(), detail);
 		};
 		const container = containerRef.current;
 		container?.addEventListener("pixel-live-draw", onLiveDraw);
@@ -534,6 +709,9 @@ export const PixelCanvas = (): FunctionComponent => {
 			mask: state.selection,
 			symmetryX: state.symmetryX,
 			symmetryY: state.symmetryY,
+			symmetryXPos: state.symmetryXPos,
+			symmetryYPos: state.symmetryYPos,
+			symmetryDiagonal: state.symmetryDiagonal,
 		});
 
 		const onPointerDown = (event: PointerEvent): void => {
@@ -570,8 +748,42 @@ export const PixelCanvas = (): FunctionComponent => {
 
 			if (activeTool !== "move") startState.anchorFloating();
 			const state = getState();
+			const activeLayerObject = state.layers[state.activeLayer];
 			const colorHex = primary ? state.primaryColor : state.secondaryColor;
 			const drawsPixels = PAINT_TOOLS.has(activeTool) || activeTool === "fill";
+			const mutatesActiveLayer =
+				drawsPixels ||
+				activeTool === "text" ||
+				(activeTool === "replace" && state.replaceScope === "layer");
+
+			if (activeLayerObject?.kind === "reference") {
+				if (activeTool === "move" && activeLayerObject.reference) {
+					if (activeLayerObject.locked) {
+						state.showNotice("Reference layer is locked");
+						return;
+					}
+					interaction = {
+						kind: "ref-move",
+						layerIndex: state.activeLayer,
+						start: point,
+						originX: activeLayerObject.reference.x,
+						originY: activeLayerObject.reference.y,
+					};
+					return;
+				}
+				if (mutatesActiveLayer) {
+					state.showNotice(
+						"Reference layer cannot be painted · select a pixel layer or use Move"
+					);
+					return;
+				}
+			}
+
+			if (activeLayerObject?.locked && mutatesActiveLayer) {
+				state.showNotice("Layer is locked · unlock it in the timeline to edit");
+				return;
+			}
+
 			const inside =
 				pixel.x >= 0 &&
 				pixel.y >= 0 &&
@@ -588,7 +800,7 @@ export const PixelCanvas = (): FunctionComponent => {
 				);
 			} else if (
 				(drawsPixels || activeTool === "text") &&
-				state.layers[state.activeLayer]?.visible === false
+				activeLayerObject?.visible === false
 			) {
 				state.showNotice("This layer is hidden · show it to see your changes");
 			}
@@ -608,6 +820,7 @@ export const PixelCanvas = (): FunctionComponent => {
 						stroke: [],
 						size: state.brushSize,
 						shape: state.brushShape,
+						customBrush: state.customBrush,
 						pixelPerfect: state.pixelPerfect,
 					};
 					if (event.shiftKey && lastPaintPoint) {
@@ -626,6 +839,64 @@ export const PixelCanvas = (): FunctionComponent => {
 					liveDraw(target.data);
 					break;
 				}
+				case "dither": {
+					const target = makeTarget(state);
+					const primaryPacked = hexToPacked(
+						primary ? state.primaryColor : state.secondaryColor
+					);
+					const secondaryPacked = state.ditherTwoColor
+						? hexToPacked(primary ? state.secondaryColor : state.primaryColor)
+						: null;
+					const ditherInteraction: Extract<Interaction, { kind: "dither" }> = {
+						kind: "dither",
+						primaryColor: primaryPacked,
+						secondaryColor: secondaryPacked,
+						target,
+						last: pixel,
+						size: state.brushSize,
+						shape: state.brushShape,
+						customBrush: state.customBrush,
+						pattern: state.ditherPattern,
+						density: state.ditherDensity,
+					};
+					if (event.shiftKey && lastPaintPoint) {
+						for (const linePoint of linePoints(
+							lastPaintPoint.x,
+							lastPaintPoint.y,
+							pixel.x,
+							pixel.y
+						)) {
+							stampDither(
+								target,
+								linePoint.x,
+								linePoint.y,
+								ditherInteraction.size,
+								ditherInteraction.shape,
+								primaryPacked,
+								secondaryPacked,
+								ditherInteraction.pattern,
+								ditherInteraction.density,
+								ditherInteraction.customBrush
+							);
+						}
+					} else {
+						stampDither(
+							target,
+							pixel.x,
+							pixel.y,
+							ditherInteraction.size,
+							ditherInteraction.shape,
+							primaryPacked,
+							secondaryPacked,
+							ditherInteraction.pattern,
+							ditherInteraction.density,
+							ditherInteraction.customBrush
+						);
+					}
+					interaction = ditherInteraction;
+					liveDraw(target.data);
+					break;
+				}
 				case "line":
 				case "rectangle":
 				case "ellipse": {
@@ -638,6 +909,7 @@ export const PixelCanvas = (): FunctionComponent => {
 						start: pixel,
 						size: state.brushSize,
 						shape: state.brushShape,
+						customBrush: state.customBrush,
 						filled: state.shapeFilled,
 					};
 					drawShape(shapeInteraction, pixel, event.shiftKey);
@@ -655,9 +927,38 @@ export const PixelCanvas = (): FunctionComponent => {
 						pixel.y,
 						color,
 						state.fillContiguous,
-						state.selection
+						state.selection,
+						{
+							symmetryX: state.symmetryX,
+							symmetryY: state.symmetryY,
+							symmetryXPos: state.symmetryXPos,
+							symmetryYPos: state.symmetryYPos,
+							symmetryDiagonal: state.symmetryDiagonal,
+						}
 					);
 					if (changed) state.commitPixels(data);
+					break;
+				}
+				case "replace": {
+					if (!inside) break;
+					const offset = pixel.y * state.width + pixel.x;
+					let sampled = state.pixels[offset] ?? TRANSPARENT;
+					if (packedAlpha(sampled) === 0 && state.replaceScope !== "layer") {
+						sampled = compositeView(state)[offset] ?? TRANSPARENT;
+					}
+					if (packedAlpha(sampled) === 0) {
+						state.showNotice("Click a colored pixel to choose the color to replace");
+						break;
+					}
+					const pickedHex = packedToHex(sampled);
+					if (event.altKey) {
+						state.setReplaceFromColor(pickedHex);
+						break;
+					}
+					state.replaceColor(
+						pickedHex,
+						primary ? state.primaryColor : state.secondaryColor
+					);
 					break;
 				}
 				case "eyedropper": {
@@ -741,6 +1042,7 @@ export const PixelCanvas = (): FunctionComponent => {
 						last: pixel,
 						size: state.brushSize,
 						shape: state.brushShape,
+						customBrush: state.customBrush,
 					};
 					blurAt(blur, pixel);
 					interaction = blur;
@@ -757,6 +1059,7 @@ export const PixelCanvas = (): FunctionComponent => {
 						last: pixel,
 						size: state.brushSize,
 						shape: state.brushShape,
+						customBrush: state.customBrush,
 					};
 					drawContour(contour);
 					interaction = contour;
@@ -824,6 +1127,28 @@ export const PixelCanvas = (): FunctionComponent => {
 					if (last.x === pixel.x && last.y === pixel.y) return;
 					const points = linePoints(last.x, last.y, pixel.x, pixel.y).slice(1);
 					for (const linePoint of points) paintPoint(interaction, linePoint);
+					interaction.last = pixel;
+					liveDraw(interaction.target.data);
+					break;
+				}
+				case "dither": {
+					const { last } = interaction;
+					if (last.x === pixel.x && last.y === pixel.y) return;
+					const points = linePoints(last.x, last.y, pixel.x, pixel.y).slice(1);
+					for (const linePoint of points) {
+						stampDither(
+							interaction.target,
+							linePoint.x,
+							linePoint.y,
+							interaction.size,
+							interaction.shape,
+							interaction.primaryColor,
+							interaction.secondaryColor,
+							interaction.pattern,
+							interaction.density,
+							interaction.customBrush
+						);
+					}
 					interaction.last = pixel;
 					liveDraw(interaction.target.data);
 					break;
@@ -913,6 +1238,13 @@ export const PixelCanvas = (): FunctionComponent => {
 					);
 					break;
 				}
+				case "ref-move": {
+					state.updateReferenceLayer(interaction.layerIndex, {
+						x: interaction.originX + (point.x - interaction.start.x),
+						y: interaction.originY + (point.y - interaction.start.y),
+					});
+					break;
+				}
 				case "pan": {
 					state.setPan(
 						interaction.panX + event.clientX - interaction.clientX,
@@ -932,7 +1264,8 @@ export const PixelCanvas = (): FunctionComponent => {
 			if (!current) return;
 			const state = getState();
 			switch (current.kind) {
-				case "paint": {
+				case "paint":
+				case "dither": {
 					lastPaintPoint = current.last;
 					state.commitPixels(current.target.data);
 					break;
@@ -974,6 +1307,7 @@ export const PixelCanvas = (): FunctionComponent => {
 					break;
 				}
 				case "move":
+				case "ref-move":
 				case "pick":
 				case "text-move": {
 					break;
@@ -1030,13 +1364,58 @@ export const PixelCanvas = (): FunctionComponent => {
 
 	/* ------------------------------- render ------------------------------- */
 
-	const footprint = PAINT_TOOLS.has(tool) ? brushSize : 1;
+	const pixelSliceCount = renderSlices.filter(
+		(slice) => slice.kind === "pixels"
+	).length;
 	const showFootprint =
 		hover !== null &&
 		tool !== "hand" &&
 		tool !== "move" &&
 		tool !== "text" &&
 		!spaceHeld;
+	const footprintOffsets = useMemo(
+		() =>
+			PAINT_TOOLS.has(tool)
+				? brushOffsets(brushSize, brushShape, customBrush)
+				: [{ x: 0, y: 0 }],
+		[tool, brushSize, brushShape, customBrush]
+	);
+	const footprintEdges = useMemo(
+		() => offsetSetEdges(footprintOffsets),
+		[footprintOffsets]
+	);
+	const footprintCenters = useMemo(() => {
+		if (!showFootprint || !hover) return [];
+		if (!PAINT_TOOLS.has(tool) && tool !== "fill") return [hover];
+		return symmetricPoints(
+			{
+				width,
+				height,
+				mask: null,
+				symmetryX,
+				symmetryY,
+				symmetryXPos,
+				symmetryYPos,
+				symmetryDiagonal,
+			},
+			hover.x,
+			hover.y
+		);
+	}, [
+		showFootprint,
+		hover,
+		tool,
+		width,
+		height,
+		symmetryX,
+		symmetryY,
+		symmetryXPos,
+		symmetryYPos,
+		symmetryDiagonal,
+	]);
+	const axisX = symmetryXPos ?? width / 2;
+	const axisY = symmetryYPos ?? height / 2;
+
 	const box = useMemo(
 		() =>
 			textDraft ? textBox({ textValue, textStyle }) : { width: 0, height: 0 },
@@ -1050,6 +1429,15 @@ export const PixelCanvas = (): FunctionComponent => {
 	else if (tool === "move") cursor = "move";
 	else if (tool === "text") cursor = "text";
 
+	const getSliceCanvas = (key: string): HTMLCanvasElement => {
+		let canvas = sliceCanvasesRef.current.get(key);
+		if (!canvas) {
+			canvas = document.createElement("canvas");
+			sliceCanvasesRef.current.set(key, canvas);
+		}
+		return canvas;
+	};
+
 	return (
 		<div
 			ref={containerRef}
@@ -1057,6 +1445,7 @@ export const PixelCanvas = (): FunctionComponent => {
 			style={{ cursor }}
 		>
 			<Stage
+				ref={stageRef}
 				height={stageSize.height}
 				listening={false}
 				width={stageSize.width}
@@ -1089,9 +1478,57 @@ export const PixelCanvas = (): FunctionComponent => {
 						{showOnion && (
 							<KonvaImage height={height} image={onionCanvas} width={width} />
 						)}
-						<KonvaImage height={height} image={bufferCanvas} width={width} />
 					</Group>
 				</Layer>
+				{renderSlices.map((slice) => {
+					if (slice.kind === "pixels") {
+						const canvas =
+							pixelSliceCount <= 1 ? bufferCanvas : getSliceCanvas(slice.key);
+						return (
+							<Layer
+								key={slice.key}
+								imageSmoothingEnabled={false}
+								listening={false}
+							>
+								<Group scaleX={zoom} scaleY={zoom} x={panX} y={panY}>
+									<KonvaImage height={height} image={canvas} width={width} />
+								</Group>
+							</Layer>
+						);
+					}
+					const layer = layers.find((candidate) => candidate.id === slice.layerId);
+					const reference = layer?.reference;
+					const image = reference
+						? referenceImagesRef.current.get(reference.src)
+						: undefined;
+					if (
+						!layer ||
+						!reference ||
+						!image ||
+						!image.complete ||
+						image.naturalWidth === 0
+					) {
+						return null;
+					}
+					return (
+						<Layer
+							key={slice.key}
+							imageSmoothingEnabled={reference.smooth}
+							listening={false}
+						>
+							<Group scaleX={zoom} scaleY={zoom} x={panX} y={panY}>
+								<KonvaImage
+									height={reference.height}
+									image={image}
+									opacity={layer.opacity / 100}
+									width={reference.width}
+									x={reference.x}
+									y={reference.y}
+								/>
+							</Group>
+						</Layer>
+					);
+				})}
 				<Layer ref={overlayLayerRef} listening={false}>
 					<Group scaleX={zoom} scaleY={zoom} x={panX} y={panY}>
 						{showGrid && zoom >= 2 && (
@@ -1131,7 +1568,7 @@ export const PixelCanvas = (): FunctionComponent => {
 						{symmetryX && (
 							<Line
 								dash={[4, 4]}
-								points={[width / 2, 0, width / 2, height]}
+								points={[axisX, 0, axisX, height]}
 								stroke="#f472b6"
 								strokeScaleEnabled={false}
 								strokeWidth={1}
@@ -1140,10 +1577,32 @@ export const PixelCanvas = (): FunctionComponent => {
 						{symmetryY && (
 							<Line
 								dash={[4, 4]}
-								points={[0, height / 2, width, height / 2]}
+								points={[0, axisY, width, axisY]}
 								stroke="#f472b6"
 								strokeScaleEnabled={false}
 								strokeWidth={1}
+							/>
+						)}
+						{symmetryDiagonal && (
+							<Shape
+								perfectDrawEnabled={false}
+								sceneFunc={(context) => {
+									const span = Math.max(width, height);
+									context.save();
+									context.beginPath();
+									context.rect(0, 0, width, height);
+									context.clip();
+									context.beginPath();
+									context.moveTo(axisX - span, axisY - span);
+									context.lineTo(axisX + span, axisY + span);
+									context.moveTo(axisX - span, axisY + span);
+									context.lineTo(axisX + span, axisY - span);
+									context.setAttr("lineWidth", 1 / zoom);
+									context.setLineDash([4 / zoom, 4 / zoom]);
+									context.setAttr("strokeStyle", "rgba(56,189,248,0.75)");
+									context.stroke();
+									context.restore();
+								}}
 							/>
 						)}
 						{edges.length > 0 && (
@@ -1224,28 +1683,38 @@ export const PixelCanvas = (): FunctionComponent => {
 								/>
 							</>
 						)}
-						{showFootprint && (
-							<>
-								<Rect
-									height={footprint}
-									stroke="#000000"
-									strokeScaleEnabled={false}
-									strokeWidth={1}
-									width={footprint}
-									x={brushOrigin(hover.x, footprint)}
-									y={brushOrigin(hover.y, footprint)}
-								/>
-								<Rect
-									dash={[3, 3]}
-									height={footprint}
-									stroke="#ffffff"
-									strokeScaleEnabled={false}
-									strokeWidth={1}
-									width={footprint}
-									x={brushOrigin(hover.x, footprint)}
-									y={brushOrigin(hover.y, footprint)}
-								/>
-							</>
+						{footprintCenters.length > 0 && footprintEdges.length > 0 && (
+							<Shape
+								perfectDrawEnabled={false}
+								sceneFunc={(context) => {
+									footprintCenters.forEach((center, centerIndex) => {
+										context.save();
+										context.setAttr("globalAlpha", centerIndex === 0 ? 1 : 0.6);
+										context.beginPath();
+										for (let index = 0; index < footprintEdges.length; index += 4) {
+											context.moveTo(
+												center.x + (footprintEdges[index] ?? 0),
+												center.y + (footprintEdges[index + 1] ?? 0)
+											);
+											context.lineTo(
+												center.x + (footprintEdges[index + 2] ?? 0),
+												center.y + (footprintEdges[index + 3] ?? 0)
+											);
+										}
+										context.setAttr("lineWidth", 1 / zoom);
+										context.setLineDash([]);
+										context.setAttr("strokeStyle", "#000000");
+										context.stroke();
+										context.setLineDash([3 / zoom, 3 / zoom]);
+										context.setAttr(
+											"strokeStyle",
+											centerIndex === 0 ? "#ffffff" : "#f472b6"
+										);
+										context.stroke();
+										context.restore();
+									});
+								}}
+							/>
 						)}
 					</Group>
 				</Layer>

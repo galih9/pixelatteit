@@ -606,7 +606,9 @@ export function getLayers(): Array<LayerInfo> {
 	return state.layers.map((layer, index) => ({
 		id: layer.id,
 		name: layer.name,
+		kind: layer.kind ?? "pixel",
 		visible: layer.visible,
+		locked: layer.locked ?? false,
 		opacity: layer.opacity,
 		isActive: index === state.activeLayer,
 	}));

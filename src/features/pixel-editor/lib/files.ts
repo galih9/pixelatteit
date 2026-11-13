@@ -186,3 +186,89 @@ export function paletteFromCanvas(): void {
 	state.setPalette(colors);
 	state.showNotice(`Palette set to ${colors.length} colors from the canvas`);
 }
+
+const MAX_REFERENCE_SIDE = 2048;
+
+function fileToDataUrl(blob: Blob): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = (): void => {
+			if (typeof reader.result === "string") resolve(reader.result);
+			else reject(new Error("Failed to read file"));
+		};
+		reader.onerror = (): void => {
+			reject(reader.error ?? new Error("Failed to read file"));
+		};
+		reader.readAsDataURL(blob);
+	});
+}
+
+async function readReferenceImageFile(file: File): Promise<{
+	src: string;
+	naturalWidth: number;
+	naturalHeight: number;
+}> {
+	const bitmap = await createImageBitmap(file);
+	const { width, height } = bitmap;
+	const longest = Math.max(width, height);
+	if (longest <= MAX_REFERENCE_SIDE && file.type !== "image/gif") {
+		bitmap.close();
+		const dataUrl = await fileToDataUrl(file);
+		return { src: dataUrl, naturalWidth: width, naturalHeight: height };
+	}
+	const scale = Math.min(1, MAX_REFERENCE_SIDE / longest);
+	const outW = Math.max(1, Math.round(width * scale));
+	const outH = Math.max(1, Math.round(height * scale));
+	const canvas = document.createElement("canvas");
+	canvas.width = outW;
+	canvas.height = outH;
+	const context = canvas.getContext("2d");
+	context?.drawImage(bitmap, 0, 0, outW, outH);
+	bitmap.close();
+	return {
+		src: canvas.toDataURL("image/png"),
+		naturalWidth: outW,
+		naturalHeight: outH,
+	};
+}
+
+/** Imports a high-resolution reference image as a non-exportable reference layer. */
+export async function importReferenceImage(
+	replaceIndex?: number
+): Promise<void> {
+	const store = useEditorStore.getState();
+	const file = await pickFile("image/*");
+	if (!file) return;
+	try {
+		const { src, naturalWidth, naturalHeight } =
+			await readReferenceImageFile(file);
+		const fitScale = Math.min(
+			store.width / naturalWidth,
+			store.height / naturalHeight
+		);
+		const fitW = naturalWidth * fitScale;
+		const fitH = naturalHeight * fitScale;
+		const reference = {
+			src,
+			naturalWidth,
+			naturalHeight,
+			x: (store.width - fitW) / 2,
+			y: (store.height - fitH) / 2,
+			width: fitW,
+			height: fitH,
+			smooth: true,
+		};
+		const baseName = file.name.replace(/\.[^.]+$/, "") || "Reference";
+		if (replaceIndex !== undefined) {
+			store.updateReferenceLayer(replaceIndex, reference);
+			store.showNotice(`Updated reference image (${naturalWidth}×${naturalHeight})`);
+		} else {
+			store.addReferenceLayer(reference, `Ref: ${baseName}`);
+			store.showNotice(
+				`Added reference layer (${naturalWidth}×${naturalHeight})`
+			);
+		}
+	} catch {
+		store.showNotice(`Could not load reference image ${file.name}`);
+	}
+}

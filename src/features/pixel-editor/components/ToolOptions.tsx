@@ -1,9 +1,15 @@
 import { useEffect, useRef } from "react";
 import type { FunctionComponent } from "../../../common/types";
-import { MAX_BRUSH_SIZE, TOOLS } from "../constants";
+import {
+	BRUSH_SHAPES,
+	DITHER_PATTERNS,
+	MAX_BRUSH_SIZE,
+	TOOLS,
+} from "../constants";
+import { importReferenceImage } from "../lib/files";
 import { isPixelFont, TEXT_FONTS } from "../lib/text";
 import { useEditorStore } from "../store/editorStore";
-import type { TextFont } from "../types";
+import type { DitherPattern, ReplaceScope, TextFont } from "../types";
 import { Divider, TextButton, Toggle } from "./ui";
 
 const BrushOptions = ({
@@ -15,6 +21,12 @@ const BrushOptions = ({
 	const setBrushSize = useEditorStore((state) => state.setBrushSize);
 	const brushShape = useEditorStore((state) => state.brushShape);
 	const setBrushShape = useEditorStore((state) => state.setBrushShape);
+	const customBrush = useEditorStore((state) => state.customBrush);
+	const captureCustomBrush = useEditorStore(
+		(state) => state.captureCustomBrush
+	);
+	const hasSelection = useEditorStore((state) => state.selection !== null);
+	const openDialog = useEditorStore((state) => state.openDialog);
 	const pixelPerfect = useEditorStore((state) => state.pixelPerfect);
 	const togglePixelPerfect = useEditorStore(
 		(state) => state.togglePixelPerfect
@@ -22,10 +34,11 @@ const BrushOptions = ({
 
 	return (
 		<>
-			<label className="flex items-center gap-2 text-xs text-zinc-400">
+			<label className="flex shrink-0 items-center gap-2 text-xs text-zinc-400">
 				Size
 				<input
-					className="w-28 accent-sky-500"
+					className="w-24 accent-sky-500"
+					disabled={brushShape === "custom"}
 					max={MAX_BRUSH_SIZE}
 					min={1}
 					type="range"
@@ -34,27 +47,45 @@ const BrushOptions = ({
 						setBrushSize(Number(event.target.value));
 					}}
 				/>
-				<span className="w-8 tabular-nums text-zinc-200">{brushSize}px</span>
+				<span className="w-10 tabular-nums text-zinc-200">
+					{brushShape === "custom"
+						? `${customBrush.width}×${customBrush.height}`
+						: `${brushSize}px`}
+				</span>
 			</label>
-			<div className="flex gap-1">
+			<div className="flex shrink-0 gap-1">
+				{BRUSH_SHAPES.map((shape) => (
+					<TextButton
+						key={shape.id}
+						active={brushShape === shape.id}
+						title={shape.label}
+						onClick={() => {
+							setBrushShape(shape.id);
+						}}
+					>
+						{shape.symbol}
+					</TextButton>
+				))}
 				<TextButton
-					active={brushShape === "square"}
+					title="Open custom brush editor"
 					onClick={() => {
-						setBrushShape("square");
+						openDialog("custom-brush");
 					}}
 				>
-					■ Square
+					Edit…
 				</TextButton>
-				<TextButton
-					active={brushShape === "circle"}
-					onClick={() => {
-						setBrushShape("circle");
-					}}
-				>
-					● Round
-				</TextButton>
+				{hasSelection && (
+					<TextButton
+						title="Capture current selection as custom brush"
+						onClick={() => {
+							captureCustomBrush();
+						}}
+					>
+						From selection
+					</TextButton>
+				)}
 			</div>
-			{showPixelPerfect && brushSize === 1 && (
+			{showPixelPerfect && brushSize === 1 && brushShape !== "custom" && (
 				<Toggle
 					checked={pixelPerfect}
 					label="Pixel perfect"
@@ -66,20 +97,80 @@ const BrushOptions = ({
 };
 
 const SymmetryOptions = (): FunctionComponent => {
+	const width = useEditorStore((state) => state.width);
+	const height = useEditorStore((state) => state.height);
 	const symmetryX = useEditorStore((state) => state.symmetryX);
 	const symmetryY = useEditorStore((state) => state.symmetryY);
+	const symmetryXPos = useEditorStore((state) => state.symmetryXPos);
+	const symmetryYPos = useEditorStore((state) => state.symmetryYPos);
+	const symmetryDiagonal = useEditorStore((state) => state.symmetryDiagonal);
 	const toggleSymmetryX = useEditorStore((state) => state.toggleSymmetryX);
 	const toggleSymmetryY = useEditorStore((state) => state.toggleSymmetryY);
+	const toggleSymmetryDiagonal = useEditorStore(
+		(state) => state.toggleSymmetryDiagonal
+	);
+	const setSymmetryXPos = useEditorStore((state) => state.setSymmetryXPos);
+	const setSymmetryYPos = useEditorStore((state) => state.setSymmetryYPos);
+	const resetSymmetryAxes = useEditorStore((state) => state.resetSymmetryAxes);
+
+	const axisX = symmetryXPos ?? width / 2;
+	const axisY = symmetryYPos ?? height / 2;
+	const hasCustomAxis = symmetryXPos !== null || symmetryYPos !== null;
+
 	return (
 		<>
 			<Divider />
-			<span className="text-xs text-zinc-400">Mirror</span>
+			<span className="shrink-0 text-xs text-zinc-400">Mirror</span>
 			<Toggle
 				checked={symmetryX}
-				label="Horizontal"
+				label="H"
 				onChange={toggleSymmetryX}
 			/>
-			<Toggle checked={symmetryY} label="Vertical" onChange={toggleSymmetryY} />
+			<Toggle checked={symmetryY} label="V" onChange={toggleSymmetryY} />
+			<Toggle
+				checked={symmetryDiagonal}
+				label="4-way"
+				onChange={toggleSymmetryDiagonal}
+			/>
+			{symmetryX && (
+				<label className="flex shrink-0 items-center gap-1 text-[11px] text-zinc-400">
+					X
+					<input
+						aria-label="Vertical mirror axis position"
+						className="w-12 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+						max={width - 0.5}
+						min={0.5}
+						step={0.5}
+						type="number"
+						value={axisX}
+						onChange={(event) => {
+							setSymmetryXPos(Number(event.target.value));
+						}}
+					/>
+				</label>
+			)}
+			{symmetryY && (
+				<label className="flex shrink-0 items-center gap-1 text-[11px] text-zinc-400">
+					Y
+					<input
+						aria-label="Horizontal mirror axis position"
+						className="w-12 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+						max={height - 0.5}
+						min={0.5}
+						step={0.5}
+						type="number"
+						value={axisY}
+						onChange={(event) => {
+							setSymmetryYPos(Number(event.target.value));
+						}}
+					/>
+				</label>
+			)}
+			{hasCustomAxis && (
+				<TextButton title="Center symmetry axes" onClick={resetSymmetryAxes}>
+					Center
+				</TextButton>
+			)}
 		</>
 	);
 };
@@ -325,8 +416,219 @@ const TextOptions = (): FunctionComponent => {
 	);
 };
 
+const DitherOptions = (): FunctionComponent => {
+	const ditherPattern = useEditorStore((state) => state.ditherPattern);
+	const setDitherPattern = useEditorStore((state) => state.setDitherPattern);
+	const ditherDensity = useEditorStore((state) => state.ditherDensity);
+	const setDitherDensity = useEditorStore((state) => state.setDitherDensity);
+	const ditherTwoColor = useEditorStore((state) => state.ditherTwoColor);
+	const toggleDitherTwoColor = useEditorStore(
+		(state) => state.toggleDitherTwoColor
+	);
+
+	return (
+		<>
+			<Divider />
+			<label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
+				Pattern
+				<select
+					className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-100 outline-none focus:border-sky-500"
+					value={ditherPattern}
+					onChange={(event) => {
+						setDitherPattern(event.target.value as DitherPattern);
+					}}
+				>
+					{DITHER_PATTERNS.map((pattern) => (
+						<option key={pattern.id} value={pattern.id}>
+							{pattern.label}
+						</option>
+					))}
+				</select>
+			</label>
+			<NumberSlider
+				label="Density"
+				max={100}
+				min={5}
+				suffix="%"
+				value={ditherDensity}
+				width="w-20"
+				onChange={setDitherDensity}
+			/>
+			<Toggle
+				checked={ditherTwoColor}
+				label="2-color"
+				onChange={toggleDitherTwoColor}
+			/>
+		</>
+	);
+};
+
+const ReplaceOptions = (): FunctionComponent => {
+	const replaceFromColor = useEditorStore((state) => state.replaceFromColor);
+	const setReplaceFromColor = useEditorStore(
+		(state) => state.setReplaceFromColor
+	);
+	const replaceTolerance = useEditorStore((state) => state.replaceTolerance);
+	const setReplaceTolerance = useEditorStore(
+		(state) => state.setReplaceTolerance
+	);
+	const replaceScope = useEditorStore((state) => state.replaceScope);
+	const setReplaceScope = useEditorStore((state) => state.setReplaceScope);
+	const primaryColor = useEditorStore((state) => state.primaryColor);
+	const replaceColor = useEditorStore((state) => state.replaceColor);
+	const hasSelection = useEditorStore((state) => state.selection !== null);
+
+	return (
+		<>
+			<div className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
+				<span>From</span>
+				{replaceFromColor ? (
+					<button
+						className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 font-mono text-[11px] text-zinc-200 hover:border-zinc-500"
+						title="Click to clear source color"
+						type="button"
+						onClick={() => {
+							setReplaceFromColor(null);
+						}}
+					>
+						<span
+							className="swatch-preserve h-3 w-3 rounded-sm border border-zinc-500"
+							style={{ background: replaceFromColor }}
+						/>
+						{replaceFromColor}
+					</button>
+				) : (
+					<span className="rounded border border-dashed border-zinc-700 px-1.5 py-0.5 text-[11px] text-zinc-500">
+						Click canvas
+					</span>
+				)}
+				<span>→</span>
+				<span
+					className="swatch-preserve h-4 w-4 rounded-sm border border-zinc-400"
+					style={{ background: primaryColor }}
+					title={`Replace with ${primaryColor}`}
+				/>
+			</div>
+			<Divider />
+			<NumberSlider
+				label="Tolerance"
+				max={100}
+				min={0}
+				value={replaceTolerance}
+				width="w-20"
+				onChange={setReplaceTolerance}
+			/>
+			<label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-400">
+				Scope
+				<select
+					className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-100 outline-none focus:border-sky-500"
+					value={replaceScope}
+					onChange={(event) => {
+						setReplaceScope(event.target.value as ReplaceScope);
+					}}
+				>
+					<option value="layer">Active layer</option>
+					<option value="all-layers">All layers</option>
+					<option value="all-frames">All frames</option>
+				</select>
+			</label>
+			<TextButton
+				disabled={!replaceFromColor}
+				variant="primary"
+				onClick={() => {
+					if (replaceFromColor) {
+						replaceColor(replaceFromColor, primaryColor);
+					}
+				}}
+			>
+				{hasSelection ? "Replace in selection" : "Replace all"}
+			</TextButton>
+			<Hint>Click canvas color to replace it</Hint>
+		</>
+	);
+};
+
+const ReferenceOptions = (): FunctionComponent => {
+	const activeLayerIndex = useEditorStore((state) => state.activeLayer);
+	const activeLayer = useEditorStore(
+		(state) => state.layers[state.activeLayer]
+	);
+	const updateReferenceLayer = useEditorStore(
+		(state) => state.updateReferenceLayer
+	);
+	const fitReferenceLayer = useEditorStore((state) => state.fitReferenceLayer);
+	const setLayerOpacity = useEditorStore((state) => state.setLayerOpacity);
+
+	if (!activeLayer || activeLayer.kind !== "reference" || !activeLayer.reference) {
+		return null;
+	}
+	const reference = activeLayer.reference;
+	const scalePercent = Math.round(
+		(reference.width / Math.max(1, reference.naturalWidth)) * 100
+	);
+
+	return (
+		<>
+			<Divider />
+			<span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+				Reference
+			</span>
+			<NumberSlider
+				label="Opacity"
+				max={100}
+				min={10}
+				suffix="%"
+				value={activeLayer.opacity}
+				width="w-16"
+				onChange={(value) => {
+					setLayerOpacity(activeLayerIndex, value);
+				}}
+			/>
+			<NumberSlider
+				label="Scale"
+				max={200}
+				min={2}
+				suffix="%"
+				value={scalePercent}
+				width="w-20"
+				onChange={(value) => {
+					const ratio = value / 100;
+					updateReferenceLayer(activeLayerIndex, {
+						width: reference.naturalWidth * ratio,
+						height: reference.naturalHeight * ratio,
+					});
+				}}
+			/>
+			<Toggle
+				checked={reference.smooth}
+				label="Smooth"
+				onChange={() => {
+					updateReferenceLayer(activeLayerIndex, { smooth: !reference.smooth });
+				}}
+			/>
+			<TextButton
+				onClick={() => {
+					fitReferenceLayer(activeLayerIndex);
+				}}
+			>
+				Fit
+			</TextButton>
+			<TextButton
+				onClick={() => {
+					void importReferenceImage(activeLayerIndex);
+				}}
+			>
+				Replace image…
+			</TextButton>
+		</>
+	);
+};
+
 export const ToolOptions = (): FunctionComponent => {
 	const tool = useEditorStore((state) => state.tool);
+	const activeLayer = useEditorStore(
+		(state) => state.layers[state.activeLayer]
+	);
 	const shapeFilled = useEditorStore((state) => state.shapeFilled);
 	const toggleShapeFilled = useEditorStore((state) => state.toggleShapeFilled);
 	const fillContiguous = useEditorStore((state) => state.fillContiguous);
@@ -345,6 +647,17 @@ export const ToolOptions = (): FunctionComponent => {
 					<BrushOptions showPixelPerfect />
 					<SymmetryOptions />
 					<Hint>Shift+click: line from last point · Alt: pick color</Hint>
+				</>
+			);
+			break;
+		}
+		case "dither": {
+			content = (
+				<>
+					<BrushOptions showPixelPerfect={false} />
+					<DitherOptions />
+					<SymmetryOptions />
+					<Hint>Left: primary · Right: swap · World-aligned pattern</Hint>
 				</>
 			);
 			break;
@@ -387,6 +700,7 @@ export const ToolOptions = (): FunctionComponent => {
 				<>
 					<BrushOptions showPixelPerfect={false} />
 					<BlurOptions />
+					<SymmetryOptions />
 					<Hint>Each stroke blurs once · stroke again for more</Hint>
 				</>
 			);
@@ -404,9 +718,14 @@ export const ToolOptions = (): FunctionComponent => {
 						label="Contiguous"
 						onChange={toggleFillContiguous}
 					/>
+					<SymmetryOptions />
 					<Hint>Off = replace that color everywhere</Hint>
 				</>
 			);
+			break;
+		}
+		case "replace": {
+			content = <ReplaceOptions />;
 			break;
 		}
 		case "wand": {
@@ -474,6 +793,7 @@ export const ToolOptions = (): FunctionComponent => {
 				{label}
 			</span>
 			{content}
+			{activeLayer?.kind === "reference" && <ReferenceOptions />}
 		</div>
 	);
 };

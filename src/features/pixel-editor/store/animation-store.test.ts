@@ -161,4 +161,79 @@ describe("animation frames in the store", () => {
 		};
 		expect(raw.cels).toHaveLength(1);
 	});
+
+	it("links and unlinks cels across frames and persists link groups", () => {
+		paint(RED, 0);
+		get().addFrame();
+		get().addFrame();
+		get().linkCels(0, 0, 2);
+		expect(get().frames[0]?.linked?.[get().layers[0]!.id]).toBeTruthy();
+		expect(framePixels(get(), 2)[0]).toBe(RED);
+
+		// Painting frame 2 updates frames 0 and 1 because they are linked.
+		get().setCurrentFrame(2);
+		paint(BLUE, 3);
+		expect(framePixels(get(), 0)[3]).toBe(BLUE);
+		expect(framePixels(get(), 1)[3]).toBe(BLUE);
+
+		// Unlink frame 1 and paint separately.
+		get().unlinkCel(0, 1);
+		get().setCurrentFrame(1);
+		paint(0xff_00_ff_00, 3);
+		expect(framePixels(get(), 0)[3]).toBe(BLUE);
+		expect(framePixels(get(), 1)[3]).toBe(0xff_00_ff_00);
+
+		// Round-trip linked cels through serialization.
+		const loaded = parseDocument(serializeDocument(documentData(get())));
+		expect(loaded).not.toBeNull();
+		if (!loaded) return;
+		get().loadDocument(loaded);
+		get().setCurrentFrame(0);
+		paint(0xff_aa_bb_cc, 2);
+		expect(framePixels(get(), 2)[2]).toBe(0xff_aa_bb_cc);
+		expect(framePixels(get(), 1)[2]).not.toBe(0xff_aa_bb_cc);
+	});
+
+	it("supports reference layers excluded from pixel compositing and flatten", () => {
+		paint(RED, 0);
+		get().addReferenceLayer({
+			src: "data:image/png;base64,iVBORw0KGgo=",
+			naturalWidth: 100,
+			naturalHeight: 80,
+			x: 0,
+			y: 0,
+			width: 4,
+			height: 3.2,
+			smooth: true,
+		});
+		expect(get().layers).toHaveLength(2);
+		expect(get().layers[0]?.kind).toBe("reference");
+
+		// Reference layers are skipped by pixel compositing and preserved on flatten.
+		expect(framePixels(get(), 0)[0]).toBe(RED);
+		get().flattenImage();
+		expect(get().layers).toHaveLength(2);
+		expect(get().layers.some((layer) => layer.kind === "reference")).toBe(true);
+
+		const loaded = parseDocument(serializeDocument(documentData(get())));
+		expect(loaded?.layers?.some((layer) => layer.kind === "reference")).toBe(
+			true
+		);
+	});
+
+	it("replaces colors across layer, all layers, and all frames", () => {
+		paint(RED, 0);
+		get().addLayer();
+		paint(RED, 1);
+		get().addFrame();
+		paint(RED, 2);
+
+		expect(get().replaceColor("#ff0000", "#0000ff", 0, "layer")).toBe(1);
+		expect(framePixels(get(), 1)[2]).toBe(BLUE);
+
+		get().setCurrentFrame(0);
+		expect(get().replaceColor("#ff0000", "#00ff00", 0, "all-layers")).toBe(2);
+		expect(celAt(0, 0, 0)).toBe(0xff_00_ff_00);
+		expect(celAt(0, 1, 1)).toBe(0xff_00_ff_00);
+	});
 });

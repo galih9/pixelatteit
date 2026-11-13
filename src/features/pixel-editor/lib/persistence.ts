@@ -4,6 +4,7 @@ import type {
 	FrameTag,
 	Layer,
 	PixelBuffer,
+	ReferenceImageData,
 	TagDirection,
 } from "../types";
 import {
@@ -14,7 +15,12 @@ import {
 	createTag,
 } from "./animation";
 import { normalizeHex } from "./color";
-import { compositeLayers, createLayer, reserveLayerIds } from "./layers";
+import {
+	compositeLayers,
+	createLayer,
+	createReferenceLayer,
+	reserveLayerIds,
+} from "./layers";
 import { decodePixels, encodePixels } from "./raster";
 
 const AUTOSAVE_KEY = "pixel-editor:autosave:v1";
@@ -42,12 +48,17 @@ type SerializedLayer = {
 	opacity: number;
 	/** base64 of raw RGBA bytes */
 	pixels: string;
+	kind?: "pixel" | "reference";
+	locked?: boolean;
+	reference?: ReferenceImageData;
 };
 
 type SerializedFrame = {
 	duration: number;
 	/** One entry per layer (same order): index into `cels`, or -1 = empty. */
 	cels: Array<number>;
+	/** Optional link group id per layer (0 or absent = unlinked). */
+	linked?: Array<number>;
 };
 
 type SerializedTag = Omit<FrameTag, "id">;
@@ -140,24 +151,30 @@ function serializeFrames(
 	// Duplicated frames share pixel buffers, so they are stored once.
 	const byBuffer = new Map<PixelBuffer, number>();
 	const byText = new Map<string, number>();
-	const frames = document.frames.map((frame) => ({
-		duration: frame.duration,
-		cels: document.layers.map((layer) => {
-			const pixels = frame.cels[layer.id];
-			if (!pixels || isEmpty(pixels)) return -1;
-			const known = byBuffer.get(pixels);
-			if (known !== undefined) return known;
-			const text = encodeCel(pixels);
-			let index = byText.get(text);
-			if (index === undefined) {
-				index = pool.length;
-				pool.push(text);
-				byText.set(text, index);
-			}
-			byBuffer.set(pixels, index);
-			return index;
-		}),
-	}));
+	const frames = document.frames.map((frame) => {
+		const linked = document.layers.map((layer) => frame.linked?.[layer.id] ?? 0);
+		const hasLinked = linked.some((id) => id > 0);
+		return {
+			duration: frame.duration,
+			cels: document.layers.map((layer) => {
+				if (layer.kind === "reference") return -1;
+				const pixels = frame.cels[layer.id];
+				if (!pixels || isEmpty(pixels)) return -1;
+				const known = byBuffer.get(pixels);
+				if (known !== undefined) return known;
+				const text = encodeCel(pixels);
+				let index = byText.get(text);
+				if (index === undefined) {
+					index = pool.length;
+					pool.push(text);
+					byText.set(text, index);
+				}
+				byBuffer.set(pixels, index);
+				return index;
+			}),
+			...(hasLinked ? { linked } : {}),
+		};
+	});
 	return { frames, cels: pool };
 }
 
@@ -175,7 +192,11 @@ export function serializeDocument(document: DocumentData): string {
 			name: layer.name,
 			visible: layer.visible,
 			opacity: layer.opacity,
-			pixels: encodePixels(layer.pixels),
+			pixels:
+				layer.kind === "reference" ? "" : encodePixels(layer.pixels),
+			...(layer.kind === "reference" ? { kind: "reference" } : {}),
+			...(layer.locked ? { locked: true } : {}),
+			...(layer.reference ? { reference: layer.reference } : {}),
 		})),
 		activeLayer: document.activeLayer,
 		...serializeFrames(document),
@@ -221,14 +242,24 @@ function parseFrames(
 	};
 	return raw.frames.map((entry) => {
 		const cels: Frame["cels"] = {};
+		const linked: NonNullable<Frame["linked"]> = {};
+		let hasLinked = false;
 		const indices = Array.isArray(entry.cels) ? entry.cels : [];
+		const linkIds = Array.isArray(entry.linked) ? entry.linked : [];
 		for (const [position, layer] of layers.entries()) {
+			if (layer.kind === "reference") continue;
 			const pixels = celAt(indices[position]);
 			if (pixels) cels[layer.id] = pixels;
+			const linkId = linkIds[position];
+			if (typeof linkId === "number" && linkId > 0) {
+				linked[layer.id] = linkId;
+				hasLinked = true;
+			}
 		}
 		return createFrame(
 			cels,
-			typeof entry.duration === "number" ? clampDuration(entry.duration) : 100
+			typeof entry.duration === "number" ? clampDuration(entry.duration) : 100,
+			hasLinked ? linked : undefined
 		);
 	});
 }
@@ -271,24 +302,38 @@ function parseLayers(
 	}
 	const layers: Array<Layer> = [];
 	for (const [index, entry] of raw.layers.entries()) {
-		if (typeof entry !== "object" || typeof entry.pixels !== "string") {
+		if (typeof entry !== "object") return null;
+		const name =
+			typeof entry.name === "string" && entry.name
+				? entry.name
+				: `Layer ${index + 1}`;
+		if (entry.kind === "reference" && entry.reference) {
+			const layer = createReferenceLayer(
+				width,
+				height,
+				name,
+				entry.reference,
+				typeof entry.opacity === "number"
+					? Math.max(0, Math.min(100, Math.round(entry.opacity)))
+					: 55
+			);
+			layer.visible = entry.visible !== false;
+			layer.locked = entry.locked === true;
+			layers.push(layer);
+			continue;
+		}
+		if (typeof entry.pixels !== "string") {
 			return null;
 		}
 		const pixels = decodePixels(entry.pixels, width * height);
 		if (!pixels) return null;
-		const layer = createLayer(
-			width,
-			height,
-			typeof entry.name === "string" && entry.name
-				? entry.name
-				: `Layer ${index + 1}`,
-			pixels
-		);
+		const layer = createLayer(width, height, name, pixels);
 		layer.visible = entry.visible !== false;
 		layer.opacity =
 			typeof entry.opacity === "number"
 				? Math.max(0, Math.min(100, Math.round(entry.opacity)))
 				: 100;
+		layer.locked = entry.locked === true;
 		layers.push(layer);
 	}
 	reserveLayerIds(layers);

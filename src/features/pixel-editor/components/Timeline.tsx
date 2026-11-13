@@ -1,22 +1,31 @@
 import {
+	ArrowDownOnSquareStackIcon,
 	BackwardIcon,
 	ChevronDownIcon,
 	ChevronLeftIcon,
 	ChevronRightIcon,
 	ChevronUpIcon,
+	ClipboardDocumentIcon,
 	DocumentDuplicateIcon,
+	EyeIcon,
+	EyeSlashIcon,
 	FilmIcon,
 	ForwardIcon,
+	LinkIcon,
+	LockClosedIcon,
+	LockOpenIcon,
 	PauseIcon,
+	PhotoIcon,
 	PlayIcon,
 	PlusIcon,
 	Square2StackIcon,
+	Square3Stack3DIcon,
 	TagIcon,
 	TrashIcon,
 } from "@heroicons/react/20/solid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FunctionComponent } from "../../../common/types";
-import { MAX_FRAMES } from "../constants";
+import { MAX_FRAMES, MAX_LAYERS } from "../constants";
 import {
 	compositeFrame,
 	isEmptyCel,
@@ -25,6 +34,7 @@ import {
 	TAG_COLORS,
 	tagsAt,
 } from "../lib/animation";
+import { importReferenceImage } from "../lib/files";
 import { subscribeFrames } from "../lib/liveView";
 import { useEditorStore } from "../store/editorStore";
 import type { FrameTag, PixelBuffer, TagDirection } from "../types";
@@ -32,8 +42,8 @@ import { Divider, IconButton, Modal, TextButton } from "./ui";
 
 const COLUMN = 34;
 const THUMB = 26;
-const ROW = 20;
-const NAMES = 132;
+const ROW = 26;
+const NAMES = 236;
 const TAG_LANE = 16;
 
 const getState = useEditorStore.getState;
@@ -375,13 +385,18 @@ const TagLanes = ({
 const CelCell = ({
 	layerIndex,
 	frameIndex,
+	inRange,
+	onSelect,
 }: {
 	layerIndex: number;
 	frameIndex: number;
+	inRange: boolean;
+	onSelect: (layerIndex: number, frameIndex: number, shift: boolean) => void;
 }): FunctionComponent => {
+	const layer = useEditorStore((state) => state.layers[layerIndex]);
+	const isReference = layer?.kind === "reference";
 	const empty = useEditorStore((state) => {
-		const layer = state.layers[layerIndex];
-		if (!layer) return true;
+		if (!layer || layer.kind === "reference") return true;
 		if (frameIndex === state.currentFrame) {
 			return isEmptyCel(
 				layerIndex === state.activeLayer ? state.pixels : layer.pixels
@@ -389,30 +404,240 @@ const CelCell = ({
 		}
 		return isEmptyCel(state.frames[frameIndex]?.cels[layer.id]);
 	});
+	const linkState = useEditorStore((state) => {
+		if (!layer || layer.kind === "reference") return "none";
+		const currentGroup = state.frames[frameIndex]?.linked?.[layer.id];
+		if (!currentGroup) return "none";
+		const hasPrevious =
+			state.frames[frameIndex - 1]?.linked?.[layer.id] === currentGroup;
+		const hasNext =
+			state.frames[frameIndex + 1]?.linked?.[layer.id] === currentGroup;
+		if (hasPrevious && hasNext) return "middle";
+		if (hasPrevious) return "end";
+		if (hasNext) return "start";
+		return "solo";
+	});
 	const isActive = useEditorStore(
 		(state) =>
 			state.currentFrame === frameIndex && state.activeLayer === layerIndex
 	);
-	const selectCel = useEditorStore((state) => state.selectCel);
 
 	return (
 		<button
 			aria-label={`Layer ${layerIndex + 1}, frame ${frameIndex + 1}`}
 			style={{ width: COLUMN, height: ROW }}
 			type="button"
-			className={`flex shrink-0 items-center justify-center border-r border-zinc-800/80 ${
-				isActive ? "bg-sky-500/30" : "hover:bg-zinc-700/60"
+			className={`relative flex shrink-0 items-center justify-center border-r border-zinc-800/80 ${
+				isActive
+					? "bg-sky-500/30"
+					: inRange && isActive === false
+						? "bg-sky-500/10 hover:bg-sky-500/20"
+						: isReference
+							? "bg-amber-500/5 hover:bg-amber-500/15"
+							: "hover:bg-zinc-700/60"
 			}`}
-			onClick={() => {
-				selectCel(layerIndex, frameIndex);
+			title={
+				isReference
+					? "Reference layer spans every frame"
+					: linkState !== "none"
+						? "Linked cel (edits apply across linked frames)"
+						: "Click to select · Shift+click range to link cels"
+			}
+			onClick={(event) => {
+				onSelect(layerIndex, frameIndex, event.shiftKey);
 			}}
 		>
-			<span
-				className={`h-2 w-2 rounded-full ${
-					empty ? "border border-zinc-600" : "bg-zinc-300"
-				}`}
-			/>
+			{isReference ? (
+				<>
+					<span className="pointer-events-none absolute inset-x-0 h-0.5 bg-amber-500/35" />
+					<span className="relative h-1.5 w-1.5 rounded-full bg-amber-400/80" />
+				</>
+			) : (
+				<>
+					{(linkState === "middle" || linkState === "end") && (
+						<span className="pointer-events-none absolute left-0 right-1/2 h-0.5 bg-sky-400/75" />
+					)}
+					{(linkState === "middle" || linkState === "start") && (
+						<span className="pointer-events-none absolute left-1/2 right-0 h-0.5 bg-sky-400/75" />
+					)}
+					<span
+						className={`relative h-2.5 w-2.5 rounded-full ${
+							linkState !== "none"
+								? empty
+									? "border-2 border-sky-400 bg-zinc-950"
+									: "border border-sky-200 bg-sky-400"
+								: empty
+									? "border border-zinc-600"
+									: "bg-zinc-300"
+						}`}
+					/>
+				</>
+			)}
 		</button>
+	);
+};
+
+const LayerRowHeader = ({
+	layerIndex,
+	onDropLayer,
+}: {
+	layerIndex: number;
+	onDropLayer: (fromIndex: number, toIndex: number) => void;
+}): FunctionComponent => {
+	const layer = useEditorStore((state) => state.layers[layerIndex]);
+	const isActive = useEditorStore((state) => state.activeLayer === layerIndex);
+	const setActiveLayer = useEditorStore((state) => state.setActiveLayer);
+	const setLayerVisible = useEditorStore((state) => state.setLayerVisible);
+	const soloLayer = useEditorStore((state) => state.soloLayer);
+	const toggleLayerLock = useEditorStore((state) => state.toggleLayerLock);
+	const renameLayer = useEditorStore((state) => state.renameLayer);
+
+	const [editing, setEditing] = useState(false);
+	const [draft, setDraft] = useState("");
+	const [dropTarget, setDropTarget] = useState(false);
+
+	if (!layer) return null;
+
+	const startRename = (): void => {
+		setDraft(layer.name);
+		setEditing(true);
+	};
+
+	const commitRename = (): void => {
+		const trimmed = draft.trim();
+		if (trimmed && trimmed !== layer.name) {
+			renameLayer(layerIndex, trimmed);
+		}
+		setEditing(false);
+	};
+
+	return (
+		<div
+			draggable={!editing}
+			style={{ width: NAMES, height: ROW }}
+			className={`sticky left-0 z-[5] flex shrink-0 items-center gap-1 border-r border-zinc-800 px-1.5 ${
+				isActive ? "bg-zinc-800 text-sky-300" : "bg-zinc-950 text-zinc-300"
+			} ${dropTarget ? "outline outline-2 -outline-offset-2 outline-sky-400" : ""}`}
+			onClick={() => {
+				setActiveLayer(layerIndex);
+			}}
+			onDragLeave={() => {
+				setDropTarget(false);
+			}}
+			onDragOver={(event) => {
+				if (!event.dataTransfer.types.includes("application/x-pixel-layer")) {
+					return;
+				}
+				event.preventDefault();
+				event.dataTransfer.dropEffect = "move";
+				setDropTarget(true);
+			}}
+			onDragStart={(event) => {
+				event.dataTransfer.setData(
+					"application/x-pixel-layer",
+					String(layerIndex)
+				);
+				event.dataTransfer.effectAllowed = "move";
+			}}
+			onDrop={(event) => {
+				event.preventDefault();
+				setDropTarget(false);
+				const from = Number(
+					event.dataTransfer.getData("application/x-pixel-layer")
+				);
+				if (Number.isInteger(from)) onDropLayer(from, layerIndex);
+			}}
+		>
+			<button
+				aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+				aria-pressed={layer.visible}
+				className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-zinc-700 hover:text-white"
+				title="Toggle visibility (Alt+click to solo)"
+				type="button"
+				onClick={(event) => {
+					event.stopPropagation();
+					if (event.altKey) soloLayer(layerIndex);
+					else setLayerVisible(layerIndex, !layer.visible);
+				}}
+			>
+				{layer.visible ? (
+					<EyeIcon className="h-3.5 w-3.5" />
+				) : (
+					<EyeSlashIcon className="h-3.5 w-3.5 text-zinc-600" />
+				)}
+			</button>
+
+			<button
+				aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+				aria-pressed={Boolean(layer.locked)}
+				title={layer.locked ? "Unlock layer" : "Lock layer"}
+				type="button"
+				className={`flex h-5 w-5 shrink-0 items-center justify-center rounded hover:bg-zinc-700 ${
+					layer.locked ? "text-amber-400" : "text-zinc-500 hover:text-zinc-200"
+				}`}
+				onClick={(event) => {
+					event.stopPropagation();
+					toggleLayerLock(layerIndex);
+				}}
+			>
+				{layer.locked ? (
+					<LockClosedIcon className="h-3 w-3" />
+				) : (
+					<LockOpenIcon className="h-3 w-3" />
+				)}
+			</button>
+
+			{layer.kind === "reference" && (
+				<span
+					className="shrink-0 rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300"
+					title="Reference layer (high-res guide, excluded from export)"
+				>
+					Ref
+				</span>
+			)}
+
+			{editing ? (
+				<input
+					autoFocus
+					className="min-w-0 flex-1 rounded border border-sky-500 bg-zinc-900 px-1 py-0 text-[11px] text-zinc-100 outline-none"
+					value={draft}
+					onBlur={commitRename}
+					onChange={(event) => {
+						setDraft(event.target.value);
+					}}
+					onClick={(event) => {
+						event.stopPropagation();
+					}}
+					onKeyDown={(event) => {
+						if (event.key === "Enter") commitRename();
+						else if (event.key === "Escape") setEditing(false);
+					}}
+				/>
+			) : (
+				<span
+					title="Double-click to rename · drag to reorder layers"
+					className={`min-w-0 flex-1 truncate text-left text-[11px] ${
+						!layer.visible
+							? "text-zinc-600 line-through"
+							: isActive
+								? "font-medium text-sky-300"
+								: "text-zinc-300"
+					}`}
+					onDoubleClick={(event) => {
+						event.stopPropagation();
+						startRename();
+					}}
+				>
+					{layer.name}
+				</span>
+			)}
+
+			{layer.opacity < 100 && !editing && (
+				<span className="shrink-0 text-[10px] tabular-nums text-zinc-500">
+					{layer.opacity}%
+				</span>
+			)}
+		</div>
 	);
 };
 
@@ -491,25 +716,23 @@ const FrameHeader = ({
 
 export const Timeline = (): FunctionComponent => {
 	usePlayback();
-	const frameCount = useEditorStore((state) => state.frames.length);
-	const layerCount = useEditorStore((state) => state.layers.length);
-	const layerNames = useEditorStore((state) =>
-		state.layers
-			.map((layer) => `${layer.visible ? "" : "!"}${layer.name}`)
-			.join("\n")
-	);
+	const frames = useEditorStore((state) => state.frames);
+	const frameCount = frames.length;
+	const layers = useEditorStore((state) => state.layers);
+	const layerCount = layers.length;
 	const activeLayer = useEditorStore((state) => state.activeLayer);
 	const currentFrame = useEditorStore((state) => state.currentFrame);
-	const frames = useEditorStore((state) => state.frames);
 	const tags = useEditorStore((state) => state.tags);
 	const playing = useEditorStore((state) => state.playing);
 	const playTag = useEditorStore((state) => state.playTag);
 	const onionSkin = useEditorStore((state) => state.onionSkin);
 	const onionBefore = useEditorStore((state) => state.onionBefore);
 	const onionAfter = useEditorStore((state) => state.onionAfter);
+	const celClipboard = useEditorStore((state) => state.celClipboard);
 	const store = useEditorStore.getState();
 
 	const [collapsed, setCollapsed] = useState(false);
+	const [gridHeight, setGridHeight] = useState(212);
 	const [range, setRange] = useState<Range>({ from: 0, to: 0 });
 	const [anchor, setAnchor] = useState(0);
 	const [editing, setEditing] = useState<FrameTag | null>(null);
@@ -539,14 +762,18 @@ export const Timeline = (): FunctionComponent => {
 		}
 	}, [currentFrame]);
 
-	const names = layerNames.split("\n");
-	// Top layer is listed first, like the layers panel.
+	// Top layer is listed first, like Aseprite / Photoshop.
 	const order = Array.from(
 		{ length: layerCount },
 		(_, position) => layerCount - 1 - position
 	);
 	const rangeSize = range.to - range.from + 1;
 	const current = frames[currentFrame];
+	const activeLayerObject = layers[activeLayer];
+	const activeIsReference = activeLayerObject?.kind === "reference";
+	const activeIsLinked = Boolean(
+		activeLayerObject && current?.linked?.[activeLayerObject.id]
+	);
 	const loopTag = tags.find((tag) => tag.id === playTag) ?? null;
 	const loopLength = sequenceDuration(sequenceFor(loopTag, frameCount), frames);
 	const currentTags = tagsAt(tags, currentFrame);
@@ -561,11 +788,52 @@ export const Timeline = (): FunctionComponent => {
 		store.setCurrentFrame(index);
 	};
 
+	const onCelClick = (
+		layerIndex: number,
+		frameIndex: number,
+		shift: boolean
+	): void => {
+		if (shift) {
+			setRange({
+				from: Math.min(anchor, frameIndex),
+				to: Math.max(anchor, frameIndex),
+			});
+		} else {
+			setAnchor(frameIndex);
+			setRange({ from: frameIndex, to: frameIndex });
+		}
+		store.selectCel(layerIndex, frameIndex);
+	};
+
+	const startResize = (event: React.PointerEvent<HTMLDivElement>): void => {
+		event.preventDefault();
+		const startY = event.clientY;
+		const startHeight = gridHeight;
+		const onMove = (moveEvent: PointerEvent): void => {
+			setGridHeight(
+				Math.max(96, Math.min(440, startHeight + (startY - moveEvent.clientY)))
+			);
+		};
+		const onUp = (): void => {
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onUp);
+		};
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onUp);
+	};
+
 	const small = "h-7 w-7";
 	const icon = "h-4 w-4";
 
 	return (
 		<section className="shrink-0 border-t border-zinc-800 bg-zinc-950/60">
+			{!collapsed && (
+				<div
+					className="h-1 cursor-row-resize bg-transparent transition-colors hover:bg-sky-500/50"
+					title="Drag to resize timeline height"
+					onPointerDown={startResize}
+				/>
+			)}
 			{/* ----------------------------- toolbar ----------------------------- */}
 			<div className="flex h-9 items-center gap-1 overflow-x-auto px-2">
 				<IconButton
@@ -583,7 +851,7 @@ export const Timeline = (): FunctionComponent => {
 				</IconButton>
 				<FilmIcon className="h-4 w-4 shrink-0 text-zinc-500" />
 				<span className="mr-1 shrink-0 text-xs font-semibold uppercase tracking-wide text-zinc-400">
-					Frames
+					Timeline
 				</span>
 				<span className="mr-1 shrink-0 text-xs tabular-nums text-zinc-500">
 					{currentFrame + 1}/{frameCount}
@@ -807,16 +1075,185 @@ export const Timeline = (): FunctionComponent => {
 				)}
 			</div>
 
+			{/* ------------------------ layers & cels bar ------------------------ */}
+			{!collapsed && (
+				<div className="flex h-8 items-center gap-1 overflow-x-auto border-t border-zinc-800/80 bg-zinc-900/50 px-2">
+					<span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+						Layers
+					</span>
+					<IconButton
+						className={small}
+						disabled={layerCount >= MAX_LAYERS}
+						label="New pixel layer (Shift+N)"
+						onClick={store.addLayer}
+					>
+						<PlusIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						disabled={layerCount >= MAX_LAYERS}
+						label="Add reference image layer"
+						onClick={() => {
+							void importReferenceImage();
+						}}
+					>
+						<PhotoIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						disabled={layerCount >= MAX_LAYERS}
+						label="Duplicate layer"
+						onClick={store.duplicateLayer}
+					>
+						<DocumentDuplicateIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						disabled={activeLayer >= layerCount - 1}
+						label="Move layer up"
+						onClick={() => {
+							store.moveLayer(1);
+						}}
+					>
+						<ChevronUpIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						disabled={activeLayer <= 0}
+						label="Move layer down"
+						onClick={() => {
+							store.moveLayer(-1);
+						}}
+					>
+						<ChevronDownIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						label="Merge down"
+						disabled={
+							activeLayer <= 0 ||
+							activeIsReference ||
+							layers[activeLayer - 1]?.kind === "reference"
+						}
+						onClick={store.mergeDown}
+					>
+						<ArrowDownOnSquareStackIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						label="Flatten pixel layers"
+						disabled={
+							layers.filter((layer) => layer.kind !== "reference").length < 2
+						}
+						onClick={store.flattenImage}
+					>
+						<Square3Stack3DIcon className={icon} />
+					</IconButton>
+					<IconButton
+						className={small}
+						disabled={layerCount <= 1}
+						label="Delete layer"
+						onClick={store.deleteLayer}
+					>
+						<TrashIcon className={icon} />
+					</IconButton>
+
+					{activeLayerObject && (
+						<label className="ml-1 flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-400">
+							Opacity
+							<input
+								className="w-16 accent-sky-500"
+								max={100}
+								min={0}
+								type="range"
+								value={activeLayerObject.opacity}
+								onChange={(event) => {
+									store.setLayerOpacity(activeLayer, Number(event.target.value));
+								}}
+							/>
+							<span className="w-7 tabular-nums text-zinc-300">
+								{activeLayerObject.opacity}%
+							</span>
+						</label>
+					)}
+
+					<Divider />
+					<span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+						Cels
+					</span>
+					<TextButton
+						disabled={activeIsReference}
+						title="Clear active cel"
+						onClick={() => {
+							store.clearCel(activeLayer, currentFrame);
+						}}
+					>
+						Clear
+					</TextButton>
+					<TextButton
+						disabled={activeIsReference || currentFrame >= frameCount - 1}
+						title="Copy active cel to the next frame"
+						onClick={() => {
+							store.duplicateCel(activeLayer, currentFrame);
+						}}
+					>
+						Dup →
+					</TextButton>
+					<IconButton
+						className={small}
+						disabled={activeIsReference}
+						label="Copy cel"
+						onClick={() => {
+							store.copyCel(activeLayer, currentFrame);
+						}}
+					>
+						<ClipboardDocumentIcon className={icon} />
+					</IconButton>
+					<TextButton
+						disabled={activeIsReference || !celClipboard}
+						title="Paste copied cel into active cel"
+						onClick={() => {
+							store.pasteCel(activeLayer, currentFrame);
+						}}
+					>
+						Paste
+					</TextButton>
+					<TextButton
+						disabled={activeIsReference || rangeSize < 2}
+						title="Shift+click frames to select a range, then link cels"
+						onClick={() => {
+							store.linkCels(activeLayer, range.from, range.to);
+						}}
+					>
+						<span className="inline-flex items-center gap-1">
+							<LinkIcon className="h-3 w-3" />
+							Link
+						</span>
+					</TextButton>
+					{activeIsLinked && (
+						<TextButton
+							title="Unlink active cel from its shared cel group"
+							onClick={() => {
+								store.unlinkCel(activeLayer, currentFrame);
+							}}
+						>
+							Unlink
+						</TextButton>
+					)}
+				</div>
+			)}
+
 			{/* ------------------------------- grid ------------------------------ */}
 			{!collapsed && (
 				<div
 					ref={scrollRef}
-					className="max-h-52 overflow-auto border-t border-zinc-800"
+					className="editor-scrollbar overflow-auto border-t border-zinc-800"
+					style={{ maxHeight: gridHeight }}
 				>
 					<div style={{ width: NAMES + frameCount * COLUMN }}>
 						<div className="sticky top-0 z-10 flex bg-zinc-950">
 							<div
-								className="sticky left-0 z-10 flex shrink-0 flex-col justify-between border-r border-zinc-800 bg-zinc-950 px-2 py-1 text-[10px] uppercase tracking-wide text-zinc-600"
+								className="sticky left-0 z-10 flex shrink-0 flex-col justify-between border-r border-zinc-800 bg-zinc-950 px-2 py-1 text-[10px] uppercase tracking-wide text-zinc-500"
 								style={{ width: NAMES }}
 							>
 								<span>Tags</span>
@@ -845,43 +1282,28 @@ export const Timeline = (): FunctionComponent => {
 								</div>
 							</div>
 						</div>
-						{order.map((layerIndex) => {
-							const raw = names[layerIndex] ?? "";
-							const hidden = raw.startsWith("!");
-							return (
-								<div
-									key={layerIndex}
-									className={`flex border-b border-zinc-800/80 ${
-										layerIndex === activeLayer ? "bg-zinc-800/50" : ""
-									}`}
-								>
-									<button
-										style={{ width: NAMES, height: ROW }}
-										title="Select layer"
-										type="button"
-										className={`sticky left-0 z-[5] shrink-0 truncate border-r border-zinc-800 bg-zinc-950 px-2 text-left text-[11px] ${
-											layerIndex === activeLayer
-												? "text-sky-300"
-												: hidden
-													? "text-zinc-600"
-													: "text-zinc-300"
-										}`}
-										onClick={() => {
-											store.setActiveLayer(layerIndex);
-										}}
-									>
-										{hidden ? raw.slice(1) : raw}
-									</button>
-									{frames.map((frame, frameIndex) => (
-										<CelCell
-											key={frame.id}
-											frameIndex={frameIndex}
-											layerIndex={layerIndex}
-										/>
-									))}
-								</div>
-							);
-						})}
+						{order.map((layerIndex) => (
+							<div
+								key={layers[layerIndex]?.id ?? layerIndex}
+								className={`flex border-b border-zinc-800/80 ${
+									layerIndex === activeLayer ? "bg-zinc-800/40" : ""
+								}`}
+							>
+								<LayerRowHeader
+									layerIndex={layerIndex}
+									onDropLayer={store.moveLayerTo}
+								/>
+								{frames.map((frame, frameIndex) => (
+									<CelCell
+										key={frame.id}
+										frameIndex={frameIndex}
+										inRange={frameIndex >= range.from && frameIndex <= range.to}
+										layerIndex={layerIndex}
+										onSelect={onCelClick}
+									/>
+								))}
+							</div>
+						))}
 					</div>
 				</div>
 			)}

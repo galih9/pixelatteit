@@ -1,7 +1,9 @@
 export type Tool =
 	| "pencil"
 	| "eraser"
+	| "dither"
 	| "fill"
+	| "replace"
 	| "eyedropper"
 	| "line"
 	| "rectangle"
@@ -15,7 +17,55 @@ export type Tool =
 	| "blur"
 	| "contour";
 
-export type BrushShape = "square" | "circle";
+export type BrushShape =
+	| "square"
+	| "circle"
+	| "diamond"
+	| "slash"
+	| "backslash"
+	| "cross"
+	| "custom";
+
+export type CustomBrush = {
+	width: number;
+	height: number;
+	/** 1 = active pixel, 0 = empty. */
+	mask: Uint8Array<ArrayBuffer>;
+};
+
+export type DitherPattern =
+	| "bayer2"
+	| "bayer4"
+	| "checker"
+	| "diagonal"
+	| "horizontal"
+	| "vertical"
+	| "dots";
+
+export type ColorRampMode = "smart" | "linear";
+
+export type ColorRampOptions = {
+	steps: number;
+	mode: ColorRampMode;
+	shadowHueShift: number;
+	highlightHueShift: number;
+	lightnessSpread: number;
+	saturationBoost: number;
+};
+
+export type ReplaceScope = "layer" | "all-layers" | "all-frames";
+
+export type ReferenceImageData = {
+	src: string;
+	naturalWidth: number;
+	naturalHeight: number;
+	/** Position and size in document pixel units (fractional allowed for hi-res). */
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	smooth: boolean;
+};
 
 /** One packed RGBA value per pixel (byte order R,G,B,A in memory). */
 export type PixelBuffer = Uint32Array<ArrayBuffer>;
@@ -52,6 +102,10 @@ export type Layer = {
 	/** 0–100 */
 	opacity: number;
 	pixels: PixelBuffer;
+	/** Defaults to "pixel". Reference layers render a high-res guide image. */
+	kind?: "pixel" | "reference";
+	locked?: boolean;
+	reference?: ReferenceImageData;
 };
 
 /**
@@ -68,6 +122,8 @@ export type Frame = {
 	/** How long the frame is shown, in milliseconds. */
 	duration: number;
 	cels: Partial<Record<number, PixelBuffer>>;
+	/** Optional link group id per layer; frames sharing an id update together. */
+	linked?: Partial<Record<number, number>>;
 };
 
 export type TagDirection = "forward" | "reverse" | "pingpong";
@@ -103,7 +159,7 @@ export type Clip = {
 	mask: SelectionMask;
 };
 
-export type DialogKind = "new" | "export" | "help" | "outline";
+export type DialogKind = "new" | "export" | "help" | "outline" | "custom-brush";
 
 export type ResizeAnchor = "center" | "top-left";
 
@@ -180,6 +236,8 @@ export type LayerInfo = {
 	visible: boolean;
 	opacity: number;
 	isActive: boolean;
+	kind: "pixel" | "reference";
+	locked: boolean;
 };
 
 export type FrameInfo = {
@@ -195,6 +253,9 @@ export type PaintTargetMeta = {
 	mask: SelectionMask | null;
 	symmetryX: boolean;
 	symmetryY: boolean;
+	symmetryXPos?: number | null;
+	symmetryYPos?: number | null;
+	symmetryDiagonal?: boolean;
 };
 
 export type PixelEditorApi<TState = unknown> = {

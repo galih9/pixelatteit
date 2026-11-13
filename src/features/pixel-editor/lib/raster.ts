@@ -1,13 +1,15 @@
 import type {
 	BrushShape,
 	Clip,
+	CustomBrush,
+	DitherPattern,
 	PixelBuffer,
 	Point,
 	ResizeAnchor,
 	SelectionMask,
 	SelectionMode,
 } from "../types";
-import { TRANSPARENT } from "./color";
+import { colorDistanceSquared, packedAlpha, TRANSPARENT } from "./color";
 
 /* -------------------------------------------------------------------------- */
 /*                                  Buffers                                   */
@@ -37,7 +39,65 @@ export type PaintTarget = {
 	mask: SelectionMask | null;
 	symmetryX: boolean;
 	symmetryY: boolean;
+	symmetryXPos?: number | null;
+	symmetryYPos?: number | null;
+	symmetryDiagonal?: boolean;
 };
+
+/** Coordinates touched by a single pixel write, including symmetry mirrors. */
+export function symmetricPoints(
+	target: Pick<
+		PaintTarget,
+		| "width"
+		| "height"
+		| "mask"
+		| "symmetryX"
+		| "symmetryY"
+		| "symmetryXPos"
+		| "symmetryYPos"
+		| "symmetryDiagonal"
+	>,
+	x: number,
+	y: number
+): Array<Point> {
+	const points: Array<Point> = [];
+	const seen = new Set<number>();
+	const add = (px: number, py: number): void => {
+		if (px < 0 || py < 0 || px >= target.width || py >= target.height) return;
+		const index = py * target.width + px;
+		if (target.mask && target.mask[index] !== 1) return;
+		if (seen.has(index)) return;
+		seen.add(index);
+		points.push({ x: px, y: py });
+	};
+	const axisX = target.symmetryXPos ?? target.width / 2;
+	const axisY = target.symmetryYPos ?? target.height / 2;
+	const mirrorX = Math.round(2 * axisX - 1 - x);
+	const mirrorY = Math.round(2 * axisY - 1 - y);
+
+	const addMirrors = (px: number, py: number): void => {
+		const mx = Math.round(2 * axisX - 1 - px);
+		const my = Math.round(2 * axisY - 1 - py);
+		add(px, py);
+		if (target.symmetryX) add(mx, py);
+		if (target.symmetryY) add(px, my);
+		if (target.symmetryX && target.symmetryY) add(mx, my);
+	};
+
+	addMirrors(x, y);
+	if (target.symmetryDiagonal) {
+		const dx = x - axisX + 0.5;
+		const dy = y - axisY + 0.5;
+		// 90-degree / diagonal swap around the symmetry origin.
+		const swappedX = Math.round(axisX + dy - 0.5);
+		const swappedY = Math.round(axisY + dx - 0.5);
+		addMirrors(swappedX, swappedY);
+		if (mirrorX !== x || mirrorY !== y) {
+			add(swappedX, swappedY);
+		}
+	}
+	return points;
+}
 
 /** Indices touched by a single pixel write, including symmetry mirrors. */
 function symmetricIndices(
@@ -45,20 +105,9 @@ function symmetricIndices(
 	x: number,
 	y: number
 ): Array<number> {
-	const result: Array<number> = [];
-	const add = (px: number, py: number): void => {
-		if (px < 0 || py < 0 || px >= target.width || py >= target.height) return;
-		const index = py * target.width + px;
-		if (target.mask && target.mask[index] !== 1) return;
-		if (!result.includes(index)) result.push(index);
-	};
-	const mirrorX = target.width - 1 - x;
-	const mirrorY = target.height - 1 - y;
-	add(x, y);
-	if (target.symmetryX) add(mirrorX, y);
-	if (target.symmetryY) add(x, mirrorY);
-	if (target.symmetryX && target.symmetryY) add(mirrorX, mirrorY);
-	return result;
+	return symmetricPoints(target, x, y).map(
+		(point) => point.y * target.width + point.x
+	);
 }
 
 export function plot(
@@ -84,9 +133,44 @@ export function restorePixel(
 	}
 }
 
+export function createDefaultCustomBrush(): CustomBrush {
+	const size = 5;
+	const mask = new Uint8Array(size * size);
+	const pattern = [
+		"..#..",
+		".###.",
+		"#####",
+		".###.",
+		"..#..",
+	];
+	for (let y = 0; y < size; y++) {
+		for (let x = 0; x < size; x++) {
+			mask[y * size + x] = pattern[y]?.[x] === "#" ? 1 : 0;
+		}
+	}
+	return { width: size, height: size, mask };
+}
+
 const brushCache = new Map<string, Array<Point>>();
 
-export function brushOffsets(size: number, shape: BrushShape): Array<Point> {
+export function brushOffsets(
+	size: number,
+	shape: BrushShape,
+	customBrush?: CustomBrush | null
+): Array<Point> {
+	if (shape === "custom" && customBrush) {
+		const offsets: Array<Point> = [];
+		const startX = -Math.floor((customBrush.width - 1) / 2);
+		const startY = -Math.floor((customBrush.height - 1) / 2);
+		for (let dy = 0; dy < customBrush.height; dy++) {
+			for (let dx = 0; dx < customBrush.width; dx++) {
+				if (customBrush.mask[dy * customBrush.width + dx] === 1) {
+					offsets.push({ x: startX + dx, y: startY + dy });
+				}
+			}
+		}
+		return offsets.length > 0 ? offsets : [{ x: 0, y: 0 }];
+	}
 	const key = `${size}:${shape}`;
 	const cached = brushCache.get(key);
 	if (cached) return cached;
@@ -94,11 +178,23 @@ export function brushOffsets(size: number, shape: BrushShape): Array<Point> {
 	const start = -Math.floor((size - 1) / 2);
 	const center = (size - 1) / 2;
 	const radiusSquared = (size / 2) ** 2 - 0.5;
+	const halfStroke = Math.max(0.55, size / 7);
 	for (let dy = 0; dy < size; dy++) {
 		for (let dx = 0; dx < size; dx++) {
 			if (shape === "circle" && size > 2) {
 				const distance = (dx - center) ** 2 + (dy - center) ** 2;
 				if (distance > radiusSquared) continue;
+			} else if (shape === "diamond" && size > 2) {
+				const manhattan = Math.abs(dx - center) + Math.abs(dy - center);
+				if (manhattan > size / 2) continue;
+			} else if (shape === "slash" && size > 1) {
+				if (Math.abs(dx + dy - (size - 1)) > halfStroke) continue;
+			} else if (shape === "backslash" && size > 1) {
+				if (Math.abs(dx - dy) > halfStroke) continue;
+			} else if (shape === "cross" && size > 2) {
+				const onVertical = Math.abs(dx - center) <= halfStroke;
+				const onHorizontal = Math.abs(dy - center) <= halfStroke;
+				if (!onVertical && !onHorizontal) continue;
 			}
 			offsets.push({ x: start + dx, y: start + dy });
 		}
@@ -118,15 +214,144 @@ export function stamp(
 	y: number,
 	size: number,
 	shape: BrushShape,
-	color: number
+	color: number,
+	customBrush?: CustomBrush | null
 ): void {
-	if (size <= 1) {
+	if (size <= 1 && shape !== "custom") {
 		plot(target, x, y, color);
 		return;
 	}
-	for (const offset of brushOffsets(size, shape)) {
+	for (const offset of brushOffsets(size, shape, customBrush)) {
 		plot(target, x + offset.x, y + offset.y, color);
 	}
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 Dithering                                  */
+/* -------------------------------------------------------------------------- */
+
+const BAYER_2X2 = [0, 2, 3, 1];
+const BAYER_4X4 = [
+	0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5,
+];
+
+function wrapModulo(value: number, divisor: number): number {
+	return ((value % divisor) + divisor) % divisor;
+}
+
+/**
+ * Evaluates a world-space dithering pattern at `(x, y)`.
+ * `density` is 0–100 (default 50).
+ */
+export function ditherPatternSample(
+	x: number,
+	y: number,
+	pattern: DitherPattern,
+	density: number
+): boolean {
+	const norm = Math.max(0, Math.min(100, density)) / 100;
+	if (norm <= 0) return false;
+	if (norm >= 1) return true;
+	const mx2 = x & 1;
+	const my2 = y & 1;
+	const mx4 = x & 3;
+	const my4 = y & 3;
+	switch (pattern) {
+		case "checker":
+			return ((x + y) & 1) === 0;
+		case "bayer2": {
+			const threshold = (BAYER_2X2[(my2 << 1) | mx2] ?? 0) + 0.5;
+			return threshold <= norm * 4;
+		}
+		case "bayer4": {
+			const threshold = (BAYER_4X4[(my4 << 2) | mx4] ?? 0) + 0.5;
+			return threshold <= norm * 16;
+		}
+		case "diagonal": {
+			const band = wrapModulo(x + y, 4);
+			return band + 0.5 <= norm * 4;
+		}
+		case "horizontal": {
+			return my4 + 0.5 <= norm * 4;
+		}
+		case "vertical": {
+			return mx4 + 0.5 <= norm * 4;
+		}
+		case "dots": {
+			return mx2 === 0 && my2 === 0;
+		}
+	}
+}
+
+export function stampDither(
+	target: PaintTarget,
+	x: number,
+	y: number,
+	size: number,
+	shape: BrushShape,
+	primaryColor: number,
+	secondaryColor: number | null,
+	pattern: DitherPattern,
+	density: number,
+	customBrush?: CustomBrush | null
+): void {
+	const offsets =
+		size <= 1 && shape !== "custom"
+			? [{ x: 0, y: 0 }]
+			: brushOffsets(size, shape, customBrush);
+	for (const offset of offsets) {
+		const pts = symmetricPoints(target, x + offset.x, y + offset.y);
+		for (const pt of pts) {
+			const active = ditherPatternSample(pt.x, pt.y, pattern, density);
+			if (active) {
+				target.data[pt.y * target.width + pt.x] = primaryColor;
+			} else if (secondaryColor !== null) {
+				target.data[pt.y * target.width + pt.x] = secondaryColor;
+			}
+		}
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             Magic Color Replace                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Replaces `targetColor` with `replacementColor` across `data` (or within
+ * `selection` when non-null). `tolerance` 0 = exact match, 1–100 = RGB fuzzy.
+ */
+export function replaceColorInBuffer(
+	data: PixelBuffer,
+	targetColor: number,
+	replacementColor: number,
+	selection: SelectionMask | null,
+	tolerance = 0
+): { pixels: PixelBuffer; count: number } {
+	const targetAlpha = packedAlpha(targetColor);
+	const clampedTolerance = Math.max(0, Math.min(100, tolerance));
+	// Max Euclidean RGB distance is sqrt(255^2 * 3) ≈ 441.67
+	const maxDistanceSquared = ((clampedTolerance / 100) * 442) ** 2;
+
+	let count = 0;
+	let result: PixelBuffer | null = null;
+	for (let index = 0; index < data.length; index++) {
+		if (selection && selection[index] !== 1) continue;
+		const current = data[index] ?? TRANSPARENT;
+		let matches = false;
+		if (clampedTolerance === 0) {
+			matches = current === targetColor;
+		} else if (targetAlpha === 0) {
+			matches = packedAlpha(current) === 0;
+		} else if (packedAlpha(current) > 0) {
+			matches =
+				colorDistanceSquared(current, targetColor) <= maxDistanceSquared;
+		}
+		if (!matches || current === replacementColor) continue;
+		if (!result) result = data.slice();
+		result[index] = replacementColor;
+		count += 1;
+	}
+	return { pixels: result ?? data, count };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -366,16 +591,37 @@ export function floodFill(
 	y: number,
 	color: number,
 	contiguous: boolean,
-	limit: SelectionMask | null
+	limit: SelectionMask | null,
+	symmetry?: Pick<
+		PaintTarget,
+		| "symmetryX"
+		| "symmetryY"
+		| "symmetryXPos"
+		| "symmetryYPos"
+		| "symmetryDiagonal"
+	>
 ): boolean {
 	if (x < 0 || y < 0 || x >= width || y >= height) return false;
-	if (data[y * width + x] === color) return false;
-	const region = regionMask(data, width, height, x, y, contiguous, limit);
+	const seeds = symmetry
+		? symmetricPoints({ width, height, mask: limit, ...symmetry }, x, y)
+		: [{ x, y }];
 	let changed = false;
-	for (let index = 0; index < region.length; index++) {
-		if (region[index] === 1) {
-			data[index] = color;
-			changed = true;
+	for (const seed of seeds) {
+		if (data[seed.y * width + seed.x] === color) continue;
+		const region = regionMask(
+			data,
+			width,
+			height,
+			seed.x,
+			seed.y,
+			contiguous,
+			limit
+		);
+		for (let index = 0; index < region.length; index++) {
+			if (region[index] === 1) {
+				data[index] = color;
+				changed = true;
+			}
 		}
 	}
 	return changed;
@@ -495,6 +741,45 @@ export function maskBounds(
 	}
 	if (right < 0) return null;
 	return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+/** Captures a custom brush mask from non-transparent pixels inside `selection`. */
+export function captureBrushFromSelection(
+	pixels: PixelBuffer,
+	selection: SelectionMask | null,
+	width: number,
+	height: number,
+	maxSize = 16
+): CustomBrush | null {
+	const area = selection ?? fullMask(width, height);
+	const bounds = maskBounds(area, width, height);
+	if (!bounds) return null;
+	const bw = Math.min(maxSize, bounds.width);
+	const bh = Math.min(maxSize, bounds.height);
+	const mask = new Uint8Array(bw * bh);
+	let hasAny = false;
+	for (let y = 0; y < bh; y++) {
+		for (let x = 0; x < bw; x++) {
+			const index = (bounds.y + y) * width + (bounds.x + x);
+			if (area[index] === 1 && packedAlpha(pixels[index] ?? 0) > 0) {
+				mask[y * bw + x] = 1;
+				hasAny = true;
+			}
+		}
+	}
+	if (!hasAny) {
+		// Fall back to the selection shape itself if the pixels inside were empty.
+		for (let y = 0; y < bh; y++) {
+			for (let x = 0; x < bw; x++) {
+				const index = (bounds.y + y) * width + (bounds.x + x);
+				if (area[index] === 1) {
+					mask[y * bw + x] = 1;
+					hasAny = true;
+				}
+			}
+		}
+	}
+	return hasAny ? { width: bw, height: bh, mask } : null;
 }
 
 export function shiftMask(

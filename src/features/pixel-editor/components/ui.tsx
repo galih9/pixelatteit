@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 import type { FunctionComponent } from "../../../common/types";
 
 type IconButtonProps = {
@@ -102,35 +102,59 @@ export const Modal = ({
 	footer,
 	onClose,
 }: ModalProps): FunctionComponent => {
+	const dialogReference = useRef<HTMLDialogElement>(null);
+	const pointerStartedOnBackdrop = useRef(false);
+	const headingId = useId();
+
 	useEffect(() => {
-		const onKeyDown = (event: KeyboardEvent): void => {
-			if (event.key === "Escape") onClose();
-		};
-		window.addEventListener("keydown", onKeyDown);
+		const dialog = dialogReference.current;
+		if (!dialog) return;
+		if (!dialog.open) {
+			dialog.showModal();
+		}
 		return (): void => {
-			window.removeEventListener("keydown", onKeyDown);
+			if (dialog.open) {
+				dialog.returnValue = "";
+				dialog.close();
+			}
 		};
-	}, [onClose]);
+	}, []);
 
 	return (
-		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-			<div
-				aria-label={title}
-				aria-modal="true"
-				role="dialog"
-				className={`w-full rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl ${
-					wide ? "max-w-2xl" : "max-w-md"
-				}`}
-			>
-				<div className="border-b border-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-100">
+		<dialog
+			ref={dialogReference}
+			aria-labelledby={headingId}
+			className={`editor-modal w-full rounded-xl border border-zinc-700 bg-zinc-900 p-0 text-zinc-100 shadow-2xl ${
+				wide ? "max-w-2xl" : "max-w-md"
+			}`}
+			onCancel={(event): void => {
+				event.preventDefault();
+				onClose();
+			}}
+			onClick={(event): void => {
+				if (
+					event.target === dialogReference.current &&
+					pointerStartedOnBackdrop.current
+				) {
+					onClose();
+				}
+				pointerStartedOnBackdrop.current = false;
+			}}
+			onPointerDown={(event): void => {
+				pointerStartedOnBackdrop.current =
+					event.target === dialogReference.current;
+			}}
+		>
+			<div className="border-b border-zinc-800 px-5 py-3">
+				<h2 className="text-sm font-semibold text-zinc-100" id={headingId}>
 					{title}
-				</div>
-				<div className="px-5 py-4 text-sm text-zinc-300">{children}</div>
-				<div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-3">
-					{footer}
-				</div>
+				</h2>
 			</div>
-		</div>
+			<div className="px-5 py-4 text-sm text-zinc-300">{children}</div>
+			<div className="flex justify-end gap-2 border-t border-zinc-800 px-5 py-3">
+				{footer}
+			</div>
+		</dialog>
 	);
 };
 

@@ -1,3 +1,4 @@
+import { type CSSProperties, useId } from "react";
 import {
 	ArrowDownTrayIcon,
 	ArrowsPointingInIcon,
@@ -17,11 +18,32 @@ import {
 import type { FunctionComponent } from "../../../common/types";
 import { openFile, saveProject } from "../lib/files";
 import { useEditorStore } from "../store/editorStore";
-import { Divider, IconButton } from "./ui";
+import { Divider, IconButton, TextButton, Toggle } from "./ui";
+
+const SYMMETRY_ANCHOR = { anchorName: "--symmetry-anchor" } as CSSProperties;
+const SYMMETRY_POPOVER_POS = {
+	positionAnchor: "--symmetry-anchor",
+} as CSSProperties;
 
 export const TopBar = (): FunctionComponent => {
+	const symmetryPopoverId = useId();
 	const name = useEditorStore((state) => state.name);
 	const setName = useEditorStore((state) => state.setName);
+	const width = useEditorStore((state) => state.width);
+	const height = useEditorStore((state) => state.height);
+	const symmetryX = useEditorStore((state) => state.symmetryX);
+	const symmetryY = useEditorStore((state) => state.symmetryY);
+	const symmetryXPos = useEditorStore((state) => state.symmetryXPos);
+	const symmetryYPos = useEditorStore((state) => state.symmetryYPos);
+	const symmetryDiagonal = useEditorStore((state) => state.symmetryDiagonal);
+	const toggleSymmetryX = useEditorStore((state) => state.toggleSymmetryX);
+	const toggleSymmetryY = useEditorStore((state) => state.toggleSymmetryY);
+	const toggleSymmetryDiagonal = useEditorStore(
+		(state) => state.toggleSymmetryDiagonal
+	);
+	const setSymmetryXPos = useEditorStore((state) => state.setSymmetryXPos);
+	const setSymmetryYPos = useEditorStore((state) => state.setSymmetryYPos);
+	const resetSymmetryAxes = useEditorStore((state) => state.resetSymmetryAxes);
 	const canUndo = useEditorStore(
 		(state) => state.undoStack.length > 0 || state.floating !== null
 	);
@@ -149,6 +171,81 @@ export const TopBar = (): FunctionComponent => {
 			>
 				<Squares2X2Icon className={svgClass} />
 			</IconButton>
+
+			<button
+				popoverTarget={symmetryPopoverId}
+				style={SYMMETRY_ANCHOR}
+				title="Configure symmetry / mirror axes"
+				type="button"
+				className={`ml-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+					symmetryX || symmetryY || symmetryDiagonal
+						? "bg-sky-500/25 text-sky-200 ring-1 ring-sky-500/60"
+						: "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+				}`}
+			>
+				Symmetry ▾
+			</button>
+
+			<div
+				className="editor-popover w-64 rounded-lg border border-zinc-700 bg-zinc-900 p-3 text-xs text-zinc-200 shadow-2xl"
+				id={symmetryPopoverId}
+				popover="auto"
+				style={SYMMETRY_POPOVER_POS}
+			>
+				<div className="mb-2 flex items-center justify-between">
+					<span className="text-[11px] font-semibold uppercase tracking-wide text-zinc-400">
+						Symmetry Axes
+					</span>
+					<TextButton onClick={resetSymmetryAxes}>Reset center</TextButton>
+				</div>
+				<div className="space-y-2">
+					<Toggle
+						checked={symmetryX}
+						label="Mirror Horizontal (Vertical line)"
+						onChange={toggleSymmetryX}
+					/>
+					<Toggle
+						checked={symmetryY}
+						label="Mirror Vertical (Horizontal line)"
+						onChange={toggleSymmetryY}
+					/>
+					<Toggle
+						checked={symmetryDiagonal}
+						label="Diagonal / 4-way reflection"
+						onChange={toggleSymmetryDiagonal}
+					/>
+					<div className="grid grid-cols-2 gap-2 border-t border-zinc-800 pt-2">
+						<label className="text-[11px] text-zinc-400">
+							X axis
+							<input
+								className="mt-1 w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1 tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+								max={width - 0.5}
+								min={0.5}
+								step={0.5}
+								type="number"
+								value={symmetryXPos ?? width / 2}
+								onChange={(event) => {
+									setSymmetryXPos(Number(event.target.value));
+								}}
+							/>
+						</label>
+						<label className="text-[11px] text-zinc-400">
+							Y axis
+							<input
+								className="mt-1 w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1 tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+								max={height - 0.5}
+								min={0.5}
+								step={0.5}
+								type="number"
+								value={symmetryYPos ?? height / 2}
+								onChange={(event) => {
+									setSymmetryYPos(Number(event.target.value));
+								}}
+							/>
+						</label>
+					</div>
+				</div>
+			</div>
 
 			<div className="ml-auto flex items-center gap-1">
 				<IconButton

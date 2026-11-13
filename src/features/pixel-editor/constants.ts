@@ -1,4 +1,9 @@
-import type { Tool } from "./types";
+import type {
+	BrushShape,
+	ColorRampOptions,
+	DitherPattern,
+	Tool,
+} from "./types";
 
 export const MAX_CANVAS_SIZE = 128;
 export const MIN_CANVAS_SIZE = 1;
@@ -42,7 +47,9 @@ export type ToolInfo = { id: Tool; label: string; shortcut: string };
 export const TOOLS: Array<ToolInfo> = [
 	{ id: "pencil", label: "Pencil", shortcut: "B" },
 	{ id: "eraser", label: "Eraser", shortcut: "E" },
+	{ id: "dither", label: "Dithering brush", shortcut: "P" },
 	{ id: "fill", label: "Fill bucket", shortcut: "G" },
+	{ id: "replace", label: "Magic color replace", shortcut: "C" },
 	{ id: "eyedropper", label: "Eyedropper", shortcut: "I" },
 	{ id: "line", label: "Line", shortcut: "L" },
 	{ id: "rectangle", label: "Rectangle", shortcut: "U" },
@@ -60,12 +67,46 @@ export const TOOLS: Array<ToolInfo> = [
 export const PAINT_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
 	"pencil",
 	"eraser",
+	"dither",
 	"line",
 	"rectangle",
 	"ellipse",
 	"contour",
 	"blur",
 ]);
+
+export const BRUSH_SHAPES: Array<{
+	id: BrushShape;
+	label: string;
+	symbol: string;
+}> = [
+	{ id: "square", label: "Square", symbol: "■" },
+	{ id: "circle", label: "Round", symbol: "●" },
+	{ id: "diamond", label: "Diamond", symbol: "◆" },
+	{ id: "slash", label: "Slash", symbol: "/" },
+	{ id: "backslash", label: "Backslash", symbol: "\\" },
+	{ id: "cross", label: "Cross", symbol: "+" },
+	{ id: "custom", label: "Custom", symbol: "★" },
+];
+
+export const DITHER_PATTERNS: Array<{ id: DitherPattern; label: string }> = [
+	{ id: "bayer4", label: "Bayer 4×4" },
+	{ id: "bayer2", label: "Bayer 2×2" },
+	{ id: "checker", label: "Checkerboard" },
+	{ id: "diagonal", label: "Diagonal" },
+	{ id: "horizontal", label: "Horizontal" },
+	{ id: "vertical", label: "Vertical" },
+	{ id: "dots", label: "Dots" },
+];
+
+export const DEFAULT_COLOR_RAMP: ColorRampOptions = {
+	steps: 7,
+	mode: "smart",
+	shadowHueShift: -25,
+	highlightHueShift: 20,
+	lightnessSpread: 70,
+	saturationBoost: 12,
+};
 
 export const MAX_LAYERS = 32;
 
