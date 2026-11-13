@@ -7,6 +7,8 @@ import { useEditorStore } from "../store/editorStore";
 import type { ResizeAnchor } from "../types";
 import { CustomBrushDialog } from "./CustomBrushDialog";
 import { OutlineDialog } from "./OutlineDialog";
+import { SpriteSheetDialog } from "./SpriteSheetDialog";
+import { TilemapDialog } from "./TilemapPreview";
 import { Modal, TextButton } from "./ui";
 
 const clampInput = (value: string): number =>
@@ -133,6 +135,7 @@ const ExportDialog = ({
 	const currentFrame = useEditorStore((state) => state.currentFrame);
 	const tags = useEditorStore((state) => state.tags);
 	const playTag = useEditorStore((state) => state.playTag);
+	const openDialog = useEditorStore((state) => state.openDialog);
 	const animated = frames.length > 1;
 	const [format, setFormat] = useState<"png" | "gif">(animated ? "gif" : "png");
 	const [tagId, setTagId] = useState<number | null>(playTag);
@@ -194,6 +197,14 @@ const ExportDialog = ({
 					}}
 				>
 					Animated GIF
+				</TextButton>
+				<TextButton
+					title="Lay every frame out on one image (Ctrl+Shift+E)"
+					onClick={() => {
+						openDialog("spritesheet");
+					}}
+				>
+					Sprite sheet…
 				</TextButton>
 			</div>
 			{isGif ? (
@@ -292,6 +303,8 @@ const SHORTCUTS: Array<[string, string]> = [
 	["Enter", "Apply moved selection"],
 	["#", "Toggle grid"],
 	["Ctrl+S / Ctrl+O / Ctrl+E", "Save / Open / Export"],
+	["Ctrl+Shift+E", "Export sprite sheet…"],
+	["Shift+T", "Tilemap large preview"],
 ];
 
 const HelpDialog = ({
@@ -326,5 +339,7 @@ export const Dialogs = (): FunctionComponent => {
 	if (dialog === "help") return <HelpDialog onClose={close} />;
 	if (dialog === "outline") return <OutlineDialog onClose={close} />;
 	if (dialog === "custom-brush") return <CustomBrushDialog onClose={close} />;
+	if (dialog === "spritesheet") return <SpriteSheetDialog onClose={close} />;
+	if (dialog === "tilemap") return <TilemapDialog onClose={close} />;
 	return null;
 };

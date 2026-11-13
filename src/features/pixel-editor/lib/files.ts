@@ -6,12 +6,21 @@ import {
 	framePixels,
 	useEditorStore,
 } from "../store/editorStore";
-import type { PixelBuffer } from "../types";
+import type { PixelBuffer, SpriteSheetOptions } from "../types";
 import { sequenceFor } from "./animation";
 import { packedToHex } from "./color";
 import { encodeGif } from "./gif";
 import { parseDocument, serializeDocument } from "./persistence";
 import { uniqueOpaqueColors } from "./raster";
+import {
+	buildSheetMetadata,
+	computeSheetLayout,
+	renderSheetPixels,
+	scalePixelBuffer,
+	type SheetLayout,
+	sheetProblem,
+	type SpriteSheetMetadata,
+} from "./spritesheet";
 
 function safeName(name: string): string {
 	return name.trim().replace(/[^\w\- ]+/g, "_") || "untitled";
@@ -110,6 +119,82 @@ export function exportGif(
 	if (reduced) {
 		state.showNotice("GIF supports 256 colors: some colors were merged");
 	}
+}
+
+export type RenderedSpriteSheet = {
+	width: number;
+	height: number;
+	pixels: PixelBuffer;
+	layout: SheetLayout;
+	metadata: SpriteSheetMetadata;
+};
+
+/**
+ * Lays out every frame of the document on one sheet. Returns null when the
+ * sheet would be too large to export.
+ */
+export function renderSpriteSheet(
+	options: SpriteSheetOptions,
+	imageName = "spritesheet.png"
+): RenderedSpriteSheet | null {
+	const state = useEditorStore.getState();
+	const scale = Math.max(1, Math.round(options.scale));
+	const normalized = { ...options, scale };
+	const layout = computeSheetLayout(
+		state.frames.length,
+		state.tags,
+		state.width,
+		state.height,
+		normalized
+	);
+	if (sheetProblem(layout, scale)) return null;
+	const sheet = renderSheetPixels(layout, (frame) => framePixels(state, frame));
+	return {
+		width: layout.width * scale,
+		height: layout.height * scale,
+		pixels: scalePixelBuffer(sheet, layout.width, layout.height, scale),
+		layout,
+		metadata: buildSheetMetadata(
+			layout,
+			normalized,
+			state.frames,
+			state.tags,
+			imageName
+		),
+	};
+}
+
+/**
+ * Downloads all frames as one PNG sprite sheet, optionally with a JSON file
+ * describing where each frame is.
+ */
+export function exportSpriteSheet(
+	options: SpriteSheetOptions,
+	fileName?: string,
+	withJson = false
+): boolean {
+	const state = useEditorStore.getState();
+	const scale = Math.max(1, Math.round(options.scale));
+	const base = `${safeName(fileName ?? state.name)}-sheet${scale === 1 ? "" : `@${scale}x`}`;
+	const sheet = renderSpriteSheet(options, `${base}.png`);
+	if (!sheet) {
+		state.showNotice("That sprite sheet is too large to export.");
+		return false;
+	}
+	const canvas = pixelsToCanvas(sheet.pixels, sheet.width, sheet.height, 1);
+	canvas.toBlob((blob) => {
+		if (!blob) return;
+		saveAs(blob, `${base}.png`);
+		if (withJson) {
+			saveAs(
+				new Blob([JSON.stringify(sheet.metadata, null, 2)], {
+					type: "application/json",
+				}),
+				`${base}.json`
+			);
+		}
+	}, "image/png");
+	return true;
 }
 
 export function saveProject(): void {
@@ -261,7 +346,9 @@ export async function importReferenceImage(
 		const baseName = file.name.replace(/\.[^.]+$/, "") || "Reference";
 		if (replaceIndex !== undefined) {
 			store.updateReferenceLayer(replaceIndex, reference);
-			store.showNotice(`Updated reference image (${naturalWidth}×${naturalHeight})`);
+			store.showNotice(
+				`Updated reference image (${naturalWidth}×${naturalHeight})`
+			);
 		} else {
 			store.addReferenceLayer(reference, `Ref: ${baseName}`);
 			store.showNotice(

@@ -7,8 +7,16 @@ import {
 	rgbaToPacked,
 	TRANSPARENT,
 } from "./color";
-import { exportGif as exportGifFile } from "./files";
+import {
+	exportGif as exportGifFile,
+	exportSpriteSheet as exportSpriteSheetFile,
+	renderSpriteSheet,
+} from "./files";
 import { encodeGif } from "./gif";
+import {
+	DEFAULT_SPRITE_SHEET_OPTIONS,
+	type SpriteSheetMetadata,
+} from "./spritesheet";
 import {
 	ellipsePoints,
 	floodFill,
@@ -41,6 +49,7 @@ import type {
 	PixelEditorApi,
 	PixelInfo,
 	ResizeAnchor,
+	SpriteSheetOptions,
 	Tool,
 } from "../types";
 
@@ -73,11 +82,11 @@ export function parseColorInput(input: ColorInput): number {
 		return input >>> 0;
 	}
 	if (typeof input === "object" && input !== null) {
-		const red = "red" in input ? input.red : ("r" in input ? input.r : 0);
-		const green = "green" in input ? input.green : ("g" in input ? input.g : 0);
-		const blue = "blue" in input ? input.blue : ("b" in input ? input.b : 0);
+		const red = "red" in input ? input.red : "r" in input ? input.r : 0;
+		const green = "green" in input ? input.green : "g" in input ? input.g : 0;
+		const blue = "blue" in input ? input.blue : "b" in input ? input.b : 0;
 		const rawAlpha =
-			"alpha" in input ? input.alpha : ("a" in input ? input.a : 255);
+			"alpha" in input ? input.alpha : "a" in input ? input.a : 255;
 		let alpha = 255;
 		if (rawAlpha !== undefined) {
 			alpha =
@@ -243,7 +252,7 @@ export function getPixel(
 		buffer =
 			options.layerIndex === state.activeLayer
 				? state.pixels
-				: targetLayer?.pixels ?? state.pixels;
+				: (targetLayer?.pixels ?? state.pixels);
 	} else {
 		buffer = state.pixels;
 	}
@@ -276,7 +285,7 @@ export function getPixels(options?: {
 		const targetLayer = state.layers[options.layerIndex];
 		return options.layerIndex === state.activeLayer
 			? state.pixels
-			: targetLayer?.pixels ?? state.pixels;
+			: (targetLayer?.pixels ?? state.pixels);
 	}
 	return state.pixels;
 }
@@ -317,7 +326,8 @@ export function getAsciiArt(options?: {
 		let line = "";
 		for (let x = 0; x < state.width; x++) {
 			const packed = buffer[y * state.width + x] ?? 0;
-			line += packedAlpha(packed) === 0 ? transparentCharacter : opaqueCharacter;
+			line +=
+				packedAlpha(packed) === 0 ? transparentCharacter : opaqueCharacter;
 		}
 		lines.push(line);
 	}
@@ -517,10 +527,7 @@ export function loadAsciiArt(
 ): number {
 	const rawLines = art.split("\n");
 	while (rawLines.length > 0 && rawLines[0]?.trim() === "") rawLines.shift();
-	while (
-		rawLines.length > 0 &&
-		rawLines[rawLines.length - 1]?.trim() === ""
-	) {
+	while (rawLines.length > 0 && rawLines[rawLines.length - 1]?.trim() === "") {
 		rawLines.pop();
 	}
 
@@ -731,9 +738,8 @@ export function addTag(
 	if (created && options) {
 		updatedState.updateTag(created.id, options);
 		return (
-			useEditorStore
-				.getState()
-				.tags.find((tag) => tag.id === created.id) ?? created
+			useEditorStore.getState().tags.find((tag) => tag.id === created.id) ??
+			created
 		);
 	}
 	return created ?? null;
@@ -829,6 +835,43 @@ export function exportGifDownload(options?: {
 	fileName?: string;
 }): void {
 	exportGifFile(options?.scale ?? 1, options?.tagId ?? null, options?.fileName);
+}
+
+/**
+ * Lays every frame out on one sheet (see `SpriteSheetOptions`) and returns its
+ * pixels plus a description of where each frame is. Null if it is too large.
+ */
+export function getSpriteSheet(options?: Partial<SpriteSheetOptions>): {
+	width: number;
+	height: number;
+	pixels: PixelBuffer;
+	metadata: SpriteSheetMetadata;
+} | null {
+	const sheet = renderSpriteSheet({
+		...DEFAULT_SPRITE_SHEET_OPTIONS,
+		...options,
+	});
+	if (!sheet) return null;
+	return {
+		width: sheet.width,
+		height: sheet.height,
+		pixels: sheet.pixels,
+		metadata: sheet.metadata,
+	};
+}
+
+export function exportSpriteSheetDownload(
+	options?: Partial<SpriteSheetOptions> & {
+		fileName?: string;
+		withJson?: boolean;
+	}
+): boolean {
+	const { fileName, withJson, ...rest } = options ?? {};
+	return exportSpriteSheetFile(
+		{ ...DEFAULT_SPRITE_SHEET_OPTIONS, ...rest },
+		fileName,
+		withJson ?? false
+	);
 }
 
 export function getTool(): Tool {
@@ -988,6 +1031,8 @@ export const pixelEditorApi: PixelEditorApi<EditorState> = {
 	getFrameGrid,
 	toGifDataURL,
 	exportGif: exportGifDownload,
+	getSpriteSheet,
+	exportSpriteSheet: exportSpriteSheetDownload,
 
 	getTool,
 	setTool,

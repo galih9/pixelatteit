@@ -10,10 +10,12 @@ import {
 	FolderOpenIcon,
 	MagnifyingGlassMinusIcon,
 	MagnifyingGlassPlusIcon,
+	MapIcon,
 	PhotoIcon,
 	QuestionMarkCircleIcon,
 	SparklesIcon,
 	Squares2X2Icon,
+	TableCellsIcon,
 } from "@heroicons/react/20/solid";
 import type { FunctionComponent } from "../../../common/types";
 import { openFile, saveProject } from "../lib/files";
@@ -114,6 +116,15 @@ export const TopBar = (): FunctionComponent => {
 			>
 				<PhotoIcon className={svgClass} />
 			</IconButton>
+			<IconButton
+				className={iconClass}
+				label="Export sprite sheet (Ctrl+Shift+E)"
+				onClick={() => {
+					openDialog("spritesheet");
+				}}
+			>
+				<TableCellsIcon className={svgClass} />
+			</IconButton>
 
 			<Divider />
 
@@ -170,6 +181,15 @@ export const TopBar = (): FunctionComponent => {
 				onClick={toggleGrid}
 			>
 				<Squares2X2Icon className={svgClass} />
+			</IconButton>
+			<IconButton
+				className={iconClass}
+				label="Tilemap preview (Shift+T)"
+				onClick={() => {
+					openDialog("tilemap");
+				}}
+			>
+				<MapIcon className={svgClass} />
 			</IconButton>
 
 			<button

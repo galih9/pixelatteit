@@ -5,6 +5,7 @@ import { Dialogs } from "./components/Dialogs";
 import { PixelCanvas } from "./components/PixelCanvas";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { StatusBar } from "./components/StatusBar";
+import { TilemapPanel } from "./components/TilemapPreview";
 import { Timeline } from "./components/Timeline";
 import { Toolbar } from "./components/Toolbar";
 import { ToolOptions } from "./components/ToolOptions";
@@ -31,6 +32,7 @@ export const PixelEditor = (): FunctionComponent => {
 				<aside className="editor-scrollbar w-64 shrink-0 overflow-y-auto border-l border-zinc-800 bg-zinc-900">
 					<ColorPanel />
 					<PreviewPanel />
+					<TilemapPanel />
 				</aside>
 			</div>
 			<Timeline />

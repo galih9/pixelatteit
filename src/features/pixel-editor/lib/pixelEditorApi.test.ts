@@ -275,5 +275,30 @@ describe("pixelEditorApi", () => {
 			const gifUrl = pixelEditorApi.toGifDataURL({ scale: 1 });
 			expect(gifUrl.startsWith("data:image/gif;base64,")).toBe(true);
 		});
+
+		it("builds sprite sheets from all frames", () => {
+			pixelEditorApi.newCanvas(4, 4);
+			pixelEditorApi.setPixel(0, 0, "#ff0000");
+			pixelEditorApi.addFrame();
+			pixelEditorApi.setPixel(1, 1, "#00ff00");
+			pixelEditorApi.addFrame();
+
+			const sheet = pixelEditorApi.getSpriteSheet({
+				layout: "columns",
+				columns: 2,
+				scale: 2,
+			});
+			expect(sheet).not.toBeNull();
+			expect(sheet?.width).toBe(16);
+			expect(sheet?.height).toBe(16);
+			expect(sheet?.pixels).toHaveLength(256);
+			expect(sheet?.metadata.frames).toHaveLength(3);
+			expect(sheet?.metadata.frames[1]?.frame).toEqual({
+				x: 8,
+				y: 0,
+				w: 8,
+				h: 8,
+			});
+		});
 	});
 });

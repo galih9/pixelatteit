@@ -45,6 +45,7 @@ export function useShortcuts(): void {
 				else if (key === "v") state.paste();
 				else if (key === "s") saveProject();
 				else if (key === "o") void openFile();
+				else if (key === "e" && event.shiftKey) state.openDialog("spritesheet");
 				else if (key === "e") state.openDialog("export");
 				else handled = false;
 				if (handled) event.preventDefault();
@@ -169,6 +170,10 @@ export function useShortcuts(): void {
 			}
 			if (event.shiftKey && key === "o") {
 				state.openDialog("outline");
+				return;
+			}
+			if (event.shiftKey && key === "t") {
+				state.openDialog("tilemap");
 				return;
 			}
 			if (key === "x") {

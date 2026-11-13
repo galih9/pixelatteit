@@ -1,3 +1,5 @@
+import type { SpriteSheetMetadata } from "./lib/spritesheet";
+
 export type Tool =
 	| "pencil"
 	| "eraser"
@@ -159,7 +161,52 @@ export type Clip = {
 	mask: SelectionMask;
 };
 
-export type DialogKind = "new" | "export" | "help" | "outline" | "custom-brush";
+export type DialogKind =
+	| "new"
+	| "export"
+	| "help"
+	| "outline"
+	| "custom-brush"
+	| "spritesheet"
+	| "tilemap";
+
+/**
+ * How frames are arranged on a sprite sheet:
+ * - `rows`: a fixed number of rows, columns follow from the frame count
+ * - `columns`: a fixed number of columns, rows follow from the frame count
+ * - `tags`: one row per animation tag
+ * - `custom`: an explicit columns × rows grid
+ */
+export type SpriteSheetLayoutMode = "rows" | "columns" | "tags" | "custom";
+
+export type SpriteSheetOptions = {
+	layout: SpriteSheetLayoutMode;
+	/** Used by `rows` and `custom`. */
+	rows: number;
+	/** Used by `columns` and `custom`. */
+	columns: number;
+	/** Empty pixels between cells, in source pixels (scaled with the sheet). */
+	padding: number;
+	/** Empty pixels around the whole sheet, in source pixels. */
+	margin: number;
+	/** Integer nearest-neighbour scale of the finished sheet. */
+	scale: number;
+	/** `tags` layout: also add frames that belong to no tag as a last row. */
+	includeUntagged: boolean;
+};
+
+export type TileMapType = "top-down" | "isometric" | "hexagonal";
+
+/**
+ * How the tile is varied from cell to cell (top-down maps), to check how edges
+ * and corners meet their neighbours:
+ * - `repeat`: the same tile everywhere
+ * - `mirror`: every other cell is flipped, so touching edges mirror each other
+ * - `rotate`: cells rotate in steps of 90° (180° for non-square tiles)
+ */
+export type TileMapPattern = "repeat" | "mirror" | "rotate";
+
+export type HexOrientation = "flat" | "pointy";
 
 export type ResizeAnchor = "center" | "top-left";
 
@@ -343,11 +390,7 @@ export type PixelEditorApi<TState = unknown> = {
 
 	// Document & canvas controls
 	newCanvas: (width: number, height: number) => void;
-	resizeCanvas: (
-		width: number,
-		height: number,
-		anchor?: ResizeAnchor
-	) => void;
+	resizeCanvas: (width: number, height: number, anchor?: ResizeAnchor) => void;
 	undo: () => void;
 	redo: () => void;
 	canUndo: () => boolean;
@@ -397,16 +440,29 @@ export type PixelEditorApi<TState = unknown> = {
 	// Animation rendering & export
 	getFramePixels: (frameIndex: number) => PixelBuffer;
 	getFrameGrid: (frameIndex: number) => Array<Array<string | null>>;
-	toGifDataURL: (options?: {
-		scale?: number;
-		tagId?: number | null;
-	}) => string;
+	toGifDataURL: (options?: { scale?: number; tagId?: number | null }) => string;
 	exportGif: (options?: {
 		scale?: number;
 		tagId?: number | null;
 		fileName?: string;
 	}) => void;
-
+	/**
+	 * All frames on one sprite sheet (pixels at the final size plus frame
+	 * positions). Options default to a fixed 8 columns; null if too large.
+	 */
+	getSpriteSheet: (options?: Partial<SpriteSheetOptions>) => {
+		width: number;
+		height: number;
+		pixels: PixelBuffer;
+		metadata: SpriteSheetMetadata;
+	} | null;
+	/** Downloads the sprite sheet PNG (and a JSON file when `withJson`). */
+	exportSpriteSheet: (
+		options?: Partial<SpriteSheetOptions> & {
+			fileName?: string;
+			withJson?: boolean;
+		}
+	) => boolean;
 	// Tools & Colors
 	getTool: () => Tool;
 	setTool: (tool: Tool) => void;
