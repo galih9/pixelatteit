@@ -126,3 +126,256 @@ export type TextStyle = {
 	/** Extra pixels between letters. */
 	spacing: number;
 };
+
+export type ColorRgba = {
+	red: number;
+	green: number;
+	blue: number;
+	alpha?: number;
+};
+
+export type ColorInput =
+	| string
+	| number
+	| ColorRgba
+	| { r: number; g: number; b: number; a?: number };
+
+export type PixelInfo = {
+	red: number;
+	green: number;
+	blue: number;
+	alpha: number;
+	hex: string;
+	rgbaString: string;
+	isTransparent: boolean;
+	packed: number;
+};
+
+export type DrawLineOptions = {
+	size?: number;
+	shape?: BrushShape;
+};
+
+export type DrawRectOptions = {
+	filled?: boolean;
+	size?: number;
+};
+
+export type DrawCircleOptions = {
+	filled?: boolean;
+};
+
+export type FloodFillOptions = {
+	contiguous?: boolean;
+};
+
+export type ExportImageOptions = {
+	scale?: number;
+	composite?: boolean;
+};
+
+export type LayerInfo = {
+	id: number;
+	name: string;
+	visible: boolean;
+	opacity: number;
+	isActive: boolean;
+};
+
+export type FrameInfo = {
+	id: number;
+	duration: number;
+	isCurrent: boolean;
+};
+
+export type PaintTargetMeta = {
+	data: PixelBuffer;
+	width: number;
+	height: number;
+	mask: SelectionMask | null;
+	symmetryX: boolean;
+	symmetryY: boolean;
+};
+
+export type PixelEditorApi<TState = unknown> = {
+	// Dimension & pixel reading
+	getDimensions: () => { width: number; height: number };
+	getSize: () => { width: number; height: number };
+	getPixel: (
+		x: number,
+		y: number,
+		options?: { layerIndex?: number; composite?: boolean }
+	) => PixelInfo | null;
+	getPixelHex: (
+		x: number,
+		y: number,
+		options?: { layerIndex?: number; composite?: boolean }
+	) => string | null;
+	getPixels: (options?: {
+		layerIndex?: number;
+		composite?: boolean;
+	}) => PixelBuffer;
+	getGrid: (options?: {
+		layerIndex?: number;
+		composite?: boolean;
+	}) => Array<Array<string | null>>;
+	getAsciiArt: (options?: {
+		composite?: boolean;
+		transparentChar?: string;
+		opaqueChar?: string;
+	}) => string;
+	toDataURL: (options?: ExportImageOptions) => string;
+
+	// Pixel mutation
+	setPixel: (x: number, y: number, color: ColorInput) => boolean;
+	setPixels: (
+		pixels: Array<{ x: number; y: number; color: ColorInput }>
+	) => number;
+	drawLine: (
+		x0: number,
+		y0: number,
+		x1: number,
+		y1: number,
+		color: ColorInput,
+		options?: DrawLineOptions
+	) => number;
+	drawRect: (
+		x: number,
+		y: number,
+		width: number,
+		height: number,
+		color: ColorInput,
+		options?: DrawRectOptions
+	) => number;
+	drawCircle: (
+		centerX: number,
+		centerY: number,
+		radius: number,
+		color: ColorInput,
+		options?: DrawCircleOptions
+	) => number;
+	floodFill: (
+		x: number,
+		y: number,
+		color: ColorInput,
+		options?: FloodFillOptions
+	) => boolean;
+	clear: (color?: ColorInput) => void;
+	loadGrid: (
+		grid: Array<Array<ColorInput | null | undefined>>,
+		originX?: number,
+		originY?: number
+	) => number;
+	loadAsciiArt: (
+		art: string,
+		paletteMap: Record<string, ColorInput | null | undefined>,
+		originX?: number,
+		originY?: number
+	) => number;
+	loadPixels: (data: PixelBuffer | ArrayLike<number>) => void;
+	mutatePixels: (
+		mutator: (
+			pixels: PixelBuffer,
+			meta: { width: number; height: number; target: PaintTargetMeta }
+		) => boolean | void
+	) => boolean;
+
+	// Document & canvas controls
+	newCanvas: (width: number, height: number) => void;
+	resizeCanvas: (
+		width: number,
+		height: number,
+		anchor?: ResizeAnchor
+	) => void;
+	undo: () => void;
+	redo: () => void;
+	canUndo: () => boolean;
+	canRedo: () => boolean;
+
+	// Layers & Frames
+	getLayers: () => Array<LayerInfo>;
+	getActiveLayerIndex: () => number;
+	setActiveLayer: (index: number) => void;
+	addLayer: () => void;
+	deleteLayer: () => void;
+	getFrames: () => Array<FrameInfo>;
+	getCurrentFrameIndex: () => number;
+	setCurrentFrame: (index: number) => void;
+	addFrame: () => void;
+	duplicateFrame: () => void;
+	deleteFrame: () => void;
+	moveFrame: (from: number, to: number) => void;
+	setFrameDuration: (index: number, duration: number) => void;
+	setFramesDuration: (from: number, to: number, duration: number) => void;
+	nextFrame: () => void;
+	previousFrame: () => void;
+	prevFrame: () => void;
+
+	// Animation playback & tags
+	play: () => void;
+	pause: () => void;
+	togglePlaying: () => void;
+	isPlaying: () => boolean;
+	setPlayTag: (id: number | null) => void;
+	getPlayTag: () => number | null;
+	getTags: () => Array<FrameTag>;
+	addTag: (
+		from: number,
+		to: number,
+		options?: Partial<Omit<FrameTag, "id">>
+	) => FrameTag | null;
+	updateTag: (id: number, patch: Partial<Omit<FrameTag, "id">>) => void;
+	deleteTag: (id: number) => void;
+
+	// Onion skinning
+	toggleOnionSkin: () => void;
+	isOnionSkinEnabled: () => boolean;
+	setOnionRange: (before: number, after: number) => void;
+	getOnionRange: () => { before: number; after: number };
+
+	// Animation rendering & export
+	getFramePixels: (frameIndex: number) => PixelBuffer;
+	getFrameGrid: (frameIndex: number) => Array<Array<string | null>>;
+	toGifDataURL: (options?: {
+		scale?: number;
+		tagId?: number | null;
+	}) => string;
+	exportGif: (options?: {
+		scale?: number;
+		tagId?: number | null;
+		fileName?: string;
+	}) => void;
+
+	// Tools & Colors
+	getTool: () => Tool;
+	setTool: (tool: Tool) => void;
+	getColors: () => {
+		primaryColor: string;
+		secondaryColor: string;
+		palette: Array<string>;
+	};
+	setPrimaryColor: (color: ColorInput) => void;
+	setSecondaryColor: (color: ColorInput) => void;
+	setPalette: (palette: Array<string>) => void;
+
+	// Selection
+	selectAll: () => void;
+	deselect: () => void;
+	setSelectionRect: (
+		x: number,
+		y: number,
+		width: number,
+		height: number
+	) => void;
+	deleteSelection: () => void;
+
+	// View & UI
+	fitView: () => void;
+	showNotice: (message: string) => void;
+
+	// Direct store access
+	getState: () => TState;
+	subscribe: (
+		listener: (state: TState, previous: TState) => void
+	) => () => void;
+};

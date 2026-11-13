@@ -217,7 +217,7 @@ export const LayersPanel = (): FunctionComponent => {
 				</div>
 			</div>
 
-			<ul className="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
+			<ul className="editor-scrollbar flex max-h-56 flex-col gap-0.5 overflow-y-auto">
 				{order.map((index) => (
 					<LayerRow key={index} index={index} />
 				))}

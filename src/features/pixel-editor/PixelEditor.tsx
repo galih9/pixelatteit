@@ -10,16 +10,18 @@ import { Timeline } from "./components/Timeline";
 import { Toolbar } from "./components/Toolbar";
 import { ToolOptions } from "./components/ToolOptions";
 import { TopBar } from "./components/TopBar";
+import { usePixelEditorApi } from "./hooks/usePixelEditorApi";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { startAutosave } from "./store/autosave";
 import "./pixel-editor.css";
 
 export const PixelEditor = (): FunctionComponent => {
 	useShortcuts();
+	usePixelEditorApi();
 	useEffect(() => startAutosave(), []);
 
 	return (
-		<div className="flex h-screen w-screen select-none flex-col overflow-hidden bg-zinc-900 text-zinc-200">
+		<div className="pixel-editor-root flex h-screen w-screen select-none flex-col overflow-hidden bg-zinc-900 text-zinc-200">
 			<TopBar />
 			<ToolOptions />
 			<div className="flex min-h-0 flex-1">
@@ -27,7 +29,7 @@ export const PixelEditor = (): FunctionComponent => {
 				<main className="canvas-backdrop relative min-w-0 flex-1">
 					<PixelCanvas />
 				</main>
-				<aside className="w-64 shrink-0 overflow-y-auto border-l border-zinc-800 bg-zinc-900">
+				<aside className="editor-scrollbar w-64 shrink-0 overflow-y-auto border-l border-zinc-800 bg-zinc-900">
 					<ColorPanel />
 					<LayersPanel />
 					<PreviewPanel />

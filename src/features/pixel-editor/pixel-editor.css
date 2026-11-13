@@ -1,3 +1,35 @@
+/* Adapt native browser UI (scrollbars, form controls) to the dark editor theme */
+.pixel-editor-root {
+	color-scheme: dark;
+}
+
+/* Stylized, unobtrusive scrollbars that blend with the zinc-900 panels */
+.editor-scrollbar {
+	--scrollbar-thumb: #71717a;
+	--scrollbar-track: #18181b;
+
+	scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+	scrollbar-width: auto;
+}
+
+/* Legacy fallback for older WebKit/Blink browsers without standard scrollbar-color */
+@supports not (scrollbar-color: auto) {
+	.editor-scrollbar::-webkit-scrollbar {
+		width: 10px;
+		height: 10px;
+	}
+
+	.editor-scrollbar::-webkit-scrollbar-thumb {
+		background: var(--scrollbar-thumb);
+		border: 2px solid var(--scrollbar-track);
+		border-radius: 9999px;
+	}
+
+	.editor-scrollbar::-webkit-scrollbar-track {
+		background: var(--scrollbar-track);
+	}
+}
+
 /* Subtle dotted backdrop behind the canvas */
 .canvas-backdrop {
 	background-color: #18181b;
